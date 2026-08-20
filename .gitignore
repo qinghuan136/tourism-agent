@@ -1,0 +1,32 @@
+# 虚拟环境与本地配置
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Python 缓存与测试产物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+pytest-cache-files-*/
+
+# 构建产物
+build/
+dist/
+*.egg-info/
+
+# 本地临时目录与 worktree
+.tmp/
+.worktrees/
+logs/
+
+# 编辑器与操作系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
