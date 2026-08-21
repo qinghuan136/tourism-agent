@@ -20,7 +20,7 @@ class RoutingContextRepository:
     """返回当前消息之前的历史，并记录根图使用的查询边界。"""
 
     def __init__(self) -> None:
-        self.recent_query: tuple[UUID, int, int] | None = None
+        self.recent_queries: list[tuple[UUID, int, int]] = []
 
     async def get_recent_conversation(
         self,
@@ -29,7 +29,7 @@ class RoutingContextRepository:
         before_message_id: int,
         limit: int,
     ) -> list[ConversationMessage]:
-        self.recent_query = (trip_id, before_message_id, limit)
+        self.recent_queries.append((trip_id, before_message_id, limit))
         created_at = datetime(2026, 8, 19, tzinfo=UTC)
         return [
             ConversationMessage(
@@ -45,6 +45,12 @@ class RoutingContextRepository:
                 created_at=created_at,
             ),
         ]
+
+    async def get_trip_context(self, _trip_id: UUID) -> dict[str, object]:
+        return {}
+
+    async def get_current_itinerary(self, _trip_id: UUID) -> str | None:
+        return None
 
 
 class BoundaryAwareRoutingModel:
@@ -62,13 +68,13 @@ class BoundaryAwareRoutingModel:
                 and all(str(message.content).startswith("【历史消息】") for message in history)
                 and current.startswith("【当前消息】")
             )
-            has_inspiration_context = any(
+            has_explore_context = any(
                 "海岛旅行灵感" in str(message.content) for message in history
             )
             route = (
-                RouteTarget.INSPIRATION
-                if boundaries_are_clear and has_inspiration_context and "就按这个" in current
-                else RouteTarget.UNSUPPORTED
+                RouteTarget.EXPLORE
+                if boundaries_are_clear and has_explore_context and "就按这个" in current
+                else RouteTarget.HELPER
             )
             return schema(route=route)
 
@@ -95,5 +101,110 @@ def test_root_routes_current_message_with_clearly_labeled_recent_history() -> No
         )
     )
 
-    assert repository.recent_query == (TRIP_ID, 40, 4)
-    assert result["route"] is RouteTarget.INSPIRATION
+    assert repository.recent_queries == [
+        (TRIP_ID, 40, 4),
+        (TRIP_ID, 40, 8),
+    ]
+    assert result["route"] is RouteTarget.EXPLORE
+
+
+class ResearchRoutingModel:
+    """验证根图能把深度调查请求交给完整 Research 子图。"""
+
+    def with_structured_output(self, schema: type[Any]) -> RunnableLambda:
+        def respond(_messages: list[BaseMessage]) -> Any:
+            if schema is IntentDecision:
+                return schema(route="research")
+            return schema(
+                goal="核实冬季川西自驾安全性",
+                tasks=["核实道路风险", "调查驾驶要求", "比较替代交通"],
+                source_strategy=["官方道路信息", "官方天气信息"],
+                success_criteria=["形成风险结论", "说明不确定性"],
+                notes="道路信息具有时效性。",
+            )
+
+        return RunnableLambda(respond)
+
+    def bind_tools(self, _tools: list[object]) -> RunnableLambda:
+        return RunnableLambda(lambda _messages: AIMessage(content="已有证据足以综合"))
+
+    def with_config(self, **_kwargs: Any) -> RunnableLambda:
+        return RunnableLambda(
+            lambda _messages: AIMessage(content="## 结论摘要\n冬季自驾存在结冰风险。")
+        )
+
+
+def test_root_routes_research_request_and_maps_report_to_response() -> None:
+    """缺少 Research 根图映射会让已实现子图仍无法从 API 主链路到达。"""
+    repository = RoutingContextRepository()
+    graph = build_root_graph(ResearchRoutingModel(), repository)
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "user_id": USER_ID,
+                "trip_id": TRIP_ID,
+                "user_message_id": 40,
+                "user_input": "深入研究冬季川西自驾是否安全",
+            },
+            {"configurable": {"thread_id": "research-root-thread"}},
+        )
+    )
+
+    assert result["route"].value == "research"
+    assert result["response"] == "## 结论摘要\n冬季自驾存在结冰风险。"
+    assert repository.recent_queries == [
+        (TRIP_ID, 40, 4),
+        (TRIP_ID, 40, 8),
+    ]
+
+
+class HelperRoutingModel:
+    """验证根图能把轻量查询交给真实 Helper 子图。"""
+
+    def with_structured_output(self, schema: type[Any]) -> RunnableLambda:
+        def respond(_messages: list[BaseMessage]) -> Any:
+            if schema is IntentDecision:
+                return schema(route="helper")
+            return schema(
+                goal="备用研究目标",
+                tasks=["核实备用信息", "比较备用信息"],
+                source_strategy=["查询官方来源"],
+                success_criteria=["取得可用结论"],
+                notes="",
+            )
+
+        return RunnableLambda(respond)
+
+    def bind_tools(self, _tools: list[object]) -> RunnableLambda:
+        return RunnableLambda(
+            lambda _messages: AIMessage(content="广州塔停止入场时间应以当天预约页面为准。")
+        )
+
+    def with_config(self, **_kwargs: Any) -> RunnableLambda:
+        return RunnableLambda(lambda _messages: AIMessage(content="备用研究报告"))
+
+
+def test_root_routes_lightweight_request_and_maps_helper_response() -> None:
+    """Helper 缺少根图映射时，轻量查询无法从 API 主链路到达。"""
+    repository = RoutingContextRepository()
+    graph = build_root_graph(HelperRoutingModel(), repository)
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "user_id": USER_ID,
+                "trip_id": TRIP_ID,
+                "user_message_id": 40,
+                "user_input": "广州塔几点停止入场？",
+            },
+            {"configurable": {"thread_id": "helper-root-thread"}},
+        )
+    )
+
+    assert result["route"].value == "helper"
+    assert result["response"] == "广州塔停止入场时间应以当天预约页面为准。"
+    assert repository.recent_queries == [
+        (TRIP_ID, 40, 4),
+        (TRIP_ID, 40, 8),
+    ]

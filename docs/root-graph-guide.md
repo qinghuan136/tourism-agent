@@ -15,7 +15,9 @@ flowchart LR
     UNDERSTAND --> ROUTE["受约束的 route"]
     ROUTE --> DECIDE{"确定性路由函数"}
     DECIDE -->|planning| PLAN["Planning Agent"]
-    DECIDE -->|unsupported| FALLBACK["能力范围说明"]
+    DECIDE -->|explore| EXPLORE["Explore Agent"]
+    DECIDE -->|research| RESEARCH["Research Agent"]
+    DECIDE -->|helper| HELPER["Helper Agent\n默认兜底与能力范围说明"]
 ```
 
 理解 Agent 只输出路由。它不能调用旅行搜索 Tool、修改 TripContext、写入行程或直接生成旅行方案。
@@ -29,9 +31,10 @@ flowchart LR
 - LLM 理解用户语义；
 - 结构化输出限制路由范围；
 - 普通路由函数把结果映射到已注册节点；
-- 未支持的意图统一进入 fallback。
+- 不能明确归入前三个业务模式的请求统一交给 Helper 处理。
 
 这样既保留自然语言理解能力，也避免让模型任意决定系统拓扑。
+根图不提前判断请求最终能否完成；Helper 根据自己的只读 Tool 能力回答、部分完成或拒绝。
 
 ## 3. 根图输入与输出
 

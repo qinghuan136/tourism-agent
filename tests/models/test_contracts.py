@@ -79,7 +79,10 @@ def test_message_request_requires_frontend_idempotency_id() -> None:
         MessageRequest(user_id=USER_ID, trip_id=TRIP_ID, message="规划杭州旅行")
 
 
-@pytest.mark.parametrize("route", ["planning", "inspiration", "unsupported"])
+@pytest.mark.parametrize(
+    "route",
+    ["planning", "explore", "research", "helper"],
+)
 def test_intent_decision_accepts_only_registered_routes(route: str) -> None:
     """理解 Agent 只能选择根图中已经注册的路由。"""
     decision = contracts.IntentDecision(route=route)
@@ -88,6 +91,12 @@ def test_intent_decision_accepts_only_registered_routes(route: str) -> None:
 
     with pytest.raises(ValidationError):
         contracts.IntentDecision(route="unknown")
+
+
+def test_intent_decision_rejects_removed_unsupported_route() -> None:
+    """能力不足是 Helper 的处理结果，不应继续伪装成根图业务模块。"""
+    with pytest.raises(ValidationError):
+        contracts.IntentDecision(route="unsupported")
 
 
 def test_message_response_serializes_public_api_contract() -> None:

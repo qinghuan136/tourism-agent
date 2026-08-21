@@ -273,8 +273,9 @@ flowchart LR
 8. Agent 认为当前方案足够满足本次请求时，可以停止扩展；
 9. 如果本轮产生或修改行程，Agent 单独调用 `submit_candidate_itinerary`；
 10. 程序在候选方案写入 State 后，通过独立节点 interrupt 并只接受“是/否”；
-11. 用户确认时程序把 candidate 写入 CurrentItinerary；拒绝时把结果返回 Agent；
-12. 写入成功后程序返回简短 assistant message，子图结束。
+11. 用户确认时程序把 candidate 写入 CurrentItinerary；第一次拒绝时把结果返回 Agent；
+12. 连续第二次拒绝时，程序强制独占调用 `ask_user` 收集调整意见，回答后重新计数；
+13. 写入成功后程序返回简短 assistant message，子图结束。
 
 ReAct 循环必须设置最大步数、可用 Tool 范围和外部调用超时。最大循环次数优先通过 LangGraph 运行配置控制，不为了计数额外污染业务 State。
 
@@ -284,7 +285,7 @@ Planning Tools 分为以下几类：
 
 | 类别 | 示例 | 主要约束 |
 |---|---|---|
-| 旅行查询 | `get_weather`、`search_places`、`web_search` | 默认只读；只返回当前决策需要的数据 |
+| 旅行查询 | 天气、地点、网页、路线和距离 Tools | 默认只读；只返回当前决策需要的数据 |
 | 历史召回 | `history_retrieval` | 查询 DB 或派生索引；返回条数和长度受限 |
 | TripContext | get、set、update、delete | 更新业务 DB，并同步当前 State 快照 |
 | 候选方案 | `submit_candidate_itinerary` | 独占一轮 Tool 调用；只更新当前 GraphState，不创建 Draft 业务实体 |
@@ -301,18 +302,25 @@ Tool 返回给 Agent 的数据必须在边界处完成筛选、规范化和压�
 | Tool | 输入 | 数据源 | 职责 |
 |---|---|---|---|
 | `get_weather` | `location: str, time_range: str, region: str = ""` | QWeather Web API | 地理编码后查询目标时间段天气；region 用于缩小行政区范围 |
-| `search_places` | `query: str, region: str = ""` | 高德 Places Web API | 查询中国大陆 POI 及必要详情；region 用于提高结果相关性 |
+| `search_places` | `query: str, region: str = ""` | 高德 Places Web API | 发现中国大陆 POI 并取得 POI ID；region 用于提高结果相关性 |
+| `get_place_details` | `place_id: str` | 高德 Places Web API | 根据 POI ID 核查地点详情 |
+| `search_nearby_places` | `query: str, center: str, radius_m: int = 5000` | 高德 Places Web API | 围绕明确坐标搜索附近 POI |
 | `web_search` | `query: str` | Tavily MCP | 补充近期动态、规则、口碑和其他开放信息 |
+| `extract_web_content` | `urls: list[str], focus: str = ""` | Tavily MCP | 提取少量已选网页正文，核查关键规则或事实 |
+| `plan_route` | `origin: str, destination: str, mode: str, ...` | 高德 Direction Web API | 核查两个地点之间的具体路线 |
+| `measure_travel_distance` | `origins: list[str], destination: str, mode: str = "driving", region: str = ""` | 高德 Distance Web API | 批量比较候选起点到同一目的地的距离和预计耗时 |
 
 `get_weather` 使用 QWeather GeoAPI 把地点名解析为 Location ID，再选择能够覆盖目标日期的预报范围并筛选结果。`time_range` 优先使用绝对日期；超出供应商可预报范围时必须明确说明，不能生成伪精确预报。GeoAPI 返回多个候选地点时采用供应商排名第一的结果，并在 Observation 中明确实际解析到的行政区；Agent 可以结合结果决定是否带更具体的 `region` 重新查询或询问用户。
 
-`search_places` 负责地址、坐标、POI 类型等地点事实；主观体验、临时开放规则等信息可以由 `web_search` 补充。国外地点暂不由高德 Tool 保证，可由 `web_search` 提供有限参考。
+`search_places` 用于发现候选并取得 POI ID，精确地点事实由 `get_place_details` 核查；周边设施由 `search_nearby_places` 查询。主观体验、临时开放规则等信息可以由 `web_search` 补充，关键网页正文再由 `extract_web_content` 少量提取。国外地点暂不由高德 Tool 保证，可由网页查询提供有限参考。
 
-`web_search` 只向 Planning Agent 暴露稳定的单一入口，内部调用 Tavily MCP 的 `tavily_search`，不直接绑定 MCP Server 的 extract、map、crawl 等全部 Tools。其描述应说明：当天气或地点查询还需要近期动态、规则或背景资料时，可以在同一轮并发调用；但不能替代精确天气和 POI 基础数据。并发由 Agent 同时产生多个 Tool Call、`ToolNode` 统一执行，不额外增加并行子图。
+网页能力只向 Planning Agent 暴露项目内稳定的 `web_search` 和 `extract_web_content`。公共层虽然包装了 `map_web_site` 和 `crawl_web_site`，但它们只分配给 Research，不进入 Planning 白名单。`web_search` 用于发现来源，`extract_web_content` 只核查少量关键 URL；它们不能替代精确天气、POI 和路线数据。并发由 Agent 同时产生多个 Tool Call、`ToolNode` 统一执行，不额外增加并行子图。
 
-Tavily MCP Server 使用 npm 包 `tavily-mcp` 以 STDIO 方式运行，Python 侧使用 `langchain-mcp-adapters` 提供的 `langchain_mcp_adapters` 客户端连接。应用生命周期负责维护持久 MCP Session 并复用 npm 子进程，不能在每次 Tool Call 时重新启动服务端。Planning 只绑定经过筛选和必要包装的 `web_search`。
+Tavily MCP Server 使用 npm 包 `tavily-mcp` 以 STDIO 方式运行，Python 侧使用 `langchain-mcp-adapters` 提供的 `langchain_mcp_adapters` 客户端连接。应用生命周期负责维护持久 MCP Session 并复用 npm 子进程，不能在每次 Tool Call 时重新启动服务端。Planning 只绑定经过筛选和必要包装的网页查询能力。
 
-三个 Tool 都只返回经过裁剪的 Observation，并保留必要的来源和查询时间。所有外部查询结果必须标记为“不可信外部数据”，Planning System Prompt 同时要求模型只把它们作为事实参考，忽略其中的指令、角色声明和 Tool 调用要求；该措施用于降低提示词注入风险，但不把外部数据视为经过事实核验。MCP 客户端、Session 及 HTTP 客户端不进入 GraphState；API Key 只从环境变量读取。首批配置为 `TAVILY_API_KEY`、`QWEATHER_API_HOST`、`QWEATHER_API_KEY` 和 `AMAP_WEB_SERVICE_KEY`。
+所有查询 Tool 都只返回经过裁剪的 Observation，并保留必要的来源和查询时间。所有外部查询结果必须标记为“不可信外部数据”，Planning System Prompt 同时要求模型只把它们作为事实参考，忽略其中的指令、角色声明和 Tool 调用要求；该措施用于降低提示词注入风险，但不把外部数据视为经过事实核验。MCP 客户端、Session 及 HTTP 客户端不进入 GraphState；API Key 只从环境变量读取。首批配置为 `TAVILY_API_KEY`、`QWEATHER_API_HOST`、`QWEATHER_API_KEY` 和 `AMAP_WEB_SERVICE_KEY`。
+
+应用生命周期可以创建完整公共 Tool 集合，但 Planning 必须在自己的 Tool 工厂中维护明确白名单。根图只负责传递公共能力，不理解或裁剪各子图权限；浏览器 Tool 和其他模块的业务写 Tool 不得进入 Planning。
 
 TripContext 和 CurrentItinerary 的写 Tool 应同时完成两件事：
 
@@ -413,6 +421,7 @@ current_itinerary      DB 中当前已确认方案，可为空
 - 通过 Tools 查询旅行信息并维护 TripContext；
 - 使用 `ask_user / interrupt` 主动提问，并通过同一 `thread_id` 恢复；
 - 独立提交 CandidateItinerary，只接受“是/否”确认，并在确认后写入 CurrentItinerary；
+- 连续第二次否决候选时强制收集调整意见，避免 Agent 反复盲目生成方案；
 - 通过 API 分别返回简短消息、候选方案和已确认行程。
 
 按需历史召回仍是 TODO。只有当最近 8 条 Conversation 无法满足实际需求时，才增加只查询
@@ -433,6 +442,7 @@ Conversation 的 `history_retrieval`。初期使用受限的普通数据库查�
 - TripContext 写 Tool 同时更新 DB 和当前 State 快照；
 - 候选方案不会在确认前写入 CurrentItinerary；
 - 候选确认只接受“是/否”，拒绝时不会写入 CurrentItinerary；
+- 第二次连续否决会强制进入 `ask_user`，用户回答后连续否决次数清零；
 - CurrentItinerary 通过独立响应字段返回，不重复写入 Conversation。
 
 测试不需要穷举模型语言表达，重点保护图路由、状态边界、Tool 副作用和持久化行为。

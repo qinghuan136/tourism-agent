@@ -32,6 +32,60 @@ def web_search(query: str) -> str:
     return query
 
 
+@tool
+def get_place_details(place_id: str) -> str:
+    """测试用地点详情查询。"""
+    return place_id
+
+
+@tool
+def search_nearby_places(query: str, center: str) -> str:
+    """测试用周边地点查询。"""
+    return f"{center}：{query}"
+
+
+@tool
+def extract_web_content(urls: list[str]) -> str:
+    """测试用网页正文提取。"""
+    return "\n".join(urls)
+
+
+@tool
+def plan_route(origin: str, destination: str, mode: str) -> str:
+    """测试用路线规划。"""
+    return f"{origin}-{destination}-{mode}"
+
+
+@tool
+def measure_travel_distance(origins: list[str], destination: str) -> str:
+    """测试用批量距离测量。"""
+    return f"{','.join(origins)}-{destination}"
+
+
+@tool
+def browser_navigate(url: str) -> str:
+    """模拟 Planning 不应获得的浏览器 Tool。"""
+    return url
+
+
+@tool
+def forbidden_business_write(value: str) -> str:
+    """模拟 Planning 不应透传的其他业务写 Tool。"""
+    return value
+
+
+@tool
+def map_web_site(url: str, instructions: str = "") -> str:
+    """模拟只应分配给 Research 的网站地图 Tool。"""
+    return f"{url}-{instructions}"
+
+
+@tool
+def crawl_web_site(url: str, instructions: str = "") -> str:
+    """模拟只应分配给 Research 的站内抓取 Tool。"""
+    return f"{url}-{instructions}"
+
+
 class WritableContextFakeRepository:
     """记录 Tool 写入，并向 load_context 提供空的初始快照。"""
 
@@ -138,13 +192,31 @@ def test_planning_exposes_only_current_stage_tools() -> None:
 
     tools = create_planning_tools(
         repository,
-        [get_weather, search_places, web_search],
+        [
+            get_weather,
+            search_places,
+            get_place_details,
+            search_nearby_places,
+            web_search,
+            extract_web_content,
+            plan_route,
+            measure_travel_distance,
+            browser_navigate,
+            forbidden_business_write,
+            map_web_site,
+            crawl_web_site,
+        ],
     )
 
     assert [tool.name for tool in tools] == [
         "get_weather",
         "search_places",
+        "get_place_details",
+        "search_nearby_places",
         "web_search",
+        "extract_web_content",
+        "plan_route",
+        "measure_travel_distance",
         "update_trip_context",
         "delete_trip_context_keys",
         "submit_candidate_itinerary",

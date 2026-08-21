@@ -19,8 +19,9 @@ class RouteTarget(StrEnum):
     """当前根图允许理解 Agent 选择的目标。"""
 
     PLANNING = "planning"
-    INSPIRATION = "inspiration"
-    UNSUPPORTED = "unsupported"
+    EXPLORE = "explore"
+    RESEARCH = "research"
+    HELPER = "helper"
 
 
 class MessageRequest(BaseModel):

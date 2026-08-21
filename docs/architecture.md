@@ -7,7 +7,10 @@
 相关专题文档：
 
 - `docs/root-graph-guide.md`：根图、运行控制与 Planning 衔接；
-- `docs/planning-subgraph-design.md`：Planning 子图结构、ReAct、上下文、记忆和实现边界。
+- `docs/planning-subgraph-design.md`：Planning 子图结构、ReAct、上下文、记忆和实现边界；
+- `docs/explore-subgraph-design.md`：Explore 子图结构、只读探索能力和实现边界；
+- `docs/research-subgraph-design.md`：Research 子图规划、调查、综合与修订流程；
+- `docs/helper-subgraph-design.md`：Helper 兜底职责、公共查询 Tools 和受限匿名浏览器边界。
 
 ## 1. 项目目标与当前范围
 
@@ -72,9 +75,9 @@ flowchart TD
 
     ROUTER --> PLAN_LOAD["Planning 子图\nload_context"]
     PLAN_LOAD --> PLAN["Planning Agent\n持续 ReAct"]
-    ROUTER -. "未来" .-> INSPIRE["Inspiration Agent"]
-    ROUTER -. "未来" .-> BOOKING["Booking 模块"]
-    ROUTER --> FALLBACK["不支持意图兜底"]
+    ROUTER --> EXPLORE["Explore 子图"]
+    ROUTER --> RESEARCH["Research 子图"]
+    ROUTER --> HELPER["Helper 子图\n轻量任务与默认兜底"]
 
     PLAN --> TOOLS["搜索 / 查询 / 状态读写 Tools"]
     PLAN --> ASK["ask_user / interrupt"]
@@ -95,11 +98,8 @@ flowchart TD
 
 理解 Agent 根据当前用户输入和当前消息之前最近 4 条 Conversation 判断目标模块。近期历史只用于理解“还是第二个”“把刚才那个换掉”等指代、省略和语义承接；不能为了路由预先加载完整 TripContext 或 CurrentItinerary。
 
-理解 Agent 只输出类似下面的最小语义结果：
-
-- 目标路由；
-- 必要时提供一段简短的路由理由，便于调试；
-- 无法支持时输出统一的 fallback 路由。
+理解 Agent 只输出目标路由。无法明确归入 Planning、Explore 或 Research 的请求默认进入 Helper；
+根图不根据自己对 Tool 能力的猜测提前拒绝请求。
 
 它不负责：
 
@@ -113,10 +113,12 @@ flowchart TD
 
 理解 Agent 的输出必须映射到代码中已经注册的节点。实际 Graph 跳转由条件路由函数完成，不允许模型任意生成节点名或直接控制系统主流程。
 
-当前至少保留：
+当前保留：
 
 - `planning`：进入旅行规划模块；
-- `unsupported`：返回当前能力范围说明。
+- `explore`：进入开放式旅行发现模块；
+- `research`：进入深度调研模块；
+- `helper`：处理轻量任务，并对其他请求提供兜底回答、能力说明或安全拒绝。
 
 新增路由应与新增业务模块同时设计，不提前放置大量空路由。
 

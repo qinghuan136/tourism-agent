@@ -14,7 +14,8 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from tourism_agent.graph.root import build_root_graph
-from tourism_agent.graph.subgraphs.planning.tools import create_query_tools
+from tourism_agent.graph.tools.browser import create_browser_tools
+from tourism_agent.graph.tools.travel_query import create_query_tools
 from tourism_agent.infrastructure.database import DatabaseSettings, PostgresDatabase
 from tourism_agent.infrastructure.logging_config import (
     LoggingSettings,
@@ -41,7 +42,7 @@ from tourism_agent.services.run_control import (
     ThreadRunCoordinator,
 )
 
-ROOT_GRAPH_RECURSION_LIMIT = 20
+ROOT_GRAPH_RECURSION_LIMIT = 50
 logger = logging.getLogger(__name__)
 
 
@@ -87,24 +88,33 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         settings = TravelToolSettings()
         logger.info("旅行查询配置加载完成")
         async with open_travel_query_clients(settings) as clients:
-            query_tools = create_query_tools(
-                clients.weather,
-                clients.places,
-                clients.web_search,
-            )
+            public_query_tools = [
+                *create_query_tools(
+                    clients.weather,
+                    clients.places,
+                    clients.web_search,
+                    clients.routes,
+                ),
+                *create_browser_tools(clients.browser),
+            ]
             # 根图、MCP 会话与 HTTP 客户端均由单一启动协程创建并在进程内复用。
             _app.state.root_graph = build_root_graph(
                 create_chat_model(),
                 repository,
-                query_tools=query_tools,
+                query_tools=public_query_tools,
             )
-            logger.info("根图创建完成 query_tools=%s", [tool.name for tool in query_tools])
+            _app.state.browser_client = clients.browser
+            logger.info(
+                "根图创建完成 public_query_tools=%s",
+                [tool.name for tool in public_query_tools],
+            )
             get_run_coordinator()
             logger.info("应用启动完成")
             try:
                 yield
             finally:
                 del _app.state.root_graph
+                del _app.state.browser_client
     finally:
         get_run_coordinator.cache_clear()
         get_idempotency_repository.cache_clear()
@@ -131,6 +141,7 @@ async def health() -> dict[str, str]:
 )
 async def handle_message(
     request: MessageRequest,
+    http_request: Request,
     graph: Annotated[CompiledStateGraph, Depends(get_root_graph)],
     repository: Annotated[PlanningRepository, Depends(get_planning_repository)],
     idempotency_repository: Annotated[
@@ -169,6 +180,7 @@ async def handle_message(
     thread_id = str(request.trip_id)
     config = graph_config(thread_id)
     user_message_id = 0
+    graph_started = False
 
     async def persist_user_input() -> None:
         nonlocal user_message_id
@@ -201,6 +213,8 @@ async def handle_message(
         )
 
     async def run_graph() -> MessageResponse:
+        nonlocal graph_started
+        graph_started = True
         snapshot = await graph.aget_state(config)
         graph_input: dict[str, object] | Command
         if snapshot.interrupts:
@@ -316,12 +330,17 @@ async def handle_message(
             response_body=body,
         )
         return JSONResponse(status_code=500, content=body)
+    finally:
+        if graph_started:
+            # 浏览器不跨 HTTP 请求保活；interrupt 所需状态由 checkpoint 保存。
+            await close_browser_thread(http_request, thread_id)
 
 
 @app.post("/trips/{trip_id}/cancel", response_model=CancelRunResponse)
 async def cancel_run(
     trip_id: UUID,
     request: CancelRunRequest,
+    http_request: Request,
     graph: Annotated[CompiledStateGraph, Depends(get_root_graph)],
     repository: Annotated[PlanningRepository, Depends(get_planning_repository)],
     coordinator: Annotated[ThreadRunCoordinator, Depends(get_run_coordinator)],
@@ -338,11 +357,23 @@ async def cancel_run(
         cancelled = cancelled_running or bool(snapshot.interrupts)
         if cancelled:
             await graph.checkpointer.adelete_thread(thread_id)
+            await close_browser_thread(http_request, thread_id)
         return cancelled
 
     cancelled = await coordinator.cancel(thread_id, clear_checkpoint)
     logger.info("API取消处理完成 trip_id=%s cancelled=%s", trip_id, cancelled)
     return CancelRunResponse(cancelled=cancelled)
+
+
+async def close_browser_thread(request: Request, thread_id: str) -> None:
+    """释放当前 thread 的匿名浏览器资源；没有创建会话时为空操作。"""
+    browser_client = getattr(request.app.state, "browser_client", None)
+    if browser_client is not None:
+        try:
+            await browser_client.close_thread(thread_id)
+        except Exception:
+            # 清理失败需要完整日志，但不能把已经形成的业务响应替换成关闭异常。
+            logger.exception("浏览器线程会话清理失败 thread_id=%s", thread_id)
 
 
 def graph_config(thread_id: str) -> dict[str, object]:

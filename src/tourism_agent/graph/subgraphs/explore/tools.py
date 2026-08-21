@@ -1,0 +1,64 @@
+"""提供 Explore 私有的用户提问 Tool 和查询 Tool 白名单。"""
+
+import logging
+from collections.abc import Sequence
+from typing import cast
+
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import BaseTool, tool
+from langgraph.prebuilt import ToolRuntime
+from langgraph.types import Command, interrupt
+
+from tourism_agent.graph.subgraphs.explore.state import ExploreState
+from tourism_agent.infrastructure.logging_config import log_preview
+
+EXPLORE_QUERY_TOOL_NAMES = {
+    "get_weather",
+    "search_places",
+    "get_place_details",
+    "search_nearby_places",
+    "web_search",
+    "extract_web_content",
+    "measure_travel_distance",
+}
+logger = logging.getLogger(__name__)
+
+
+@tool
+def ask_user(
+    question: str,
+    runtime: ToolRuntime[None, ExploreState],
+) -> Command:
+    """只在缺失信息会显著改变探索方向时暂停并询问用户。"""
+    logger.info(
+        "Tool调用开始 name=ask_user module=explore trip_id=%s tool_call_id=%s question=%s",
+        runtime.state["trip_id"],
+        runtime.tool_call_id,
+        log_preview(question),
+    )
+    answer = interrupt({"kind": "ask_user", "question": question})
+    logger.info(
+        "Tool恢复完成 name=ask_user module=explore trip_id=%s answer=%s",
+        runtime.state["trip_id"],
+        log_preview(answer),
+    )
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    content=str(answer),
+                    tool_call_id=cast(str, runtime.tool_call_id),
+                )
+            ]
+        }
+    )
+
+
+def create_explore_tools(query_tools: Sequence[BaseTool] = ()) -> list[BaseTool]:
+    """只选择 Explore 获准使用的公共只读查询能力。"""
+    selected_query_tools = [
+        query_tool
+        for query_tool in query_tools
+        if query_tool.name in EXPLORE_QUERY_TOOL_NAMES
+    ]
+    return [*selected_query_tools, ask_user]
