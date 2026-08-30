@@ -10,7 +10,7 @@
 - `docs/planning-subgraph-design.md`：Planning 子图结构、ReAct、上下文、记忆和实现边界；
 - `docs/explore-subgraph-design.md`：Explore 子图结构、只读探索能力和实现边界；
 - `docs/research-subgraph-design.md`：Research 子图规划、调查、综合与修订流程；
-- `docs/helper-subgraph-design.md`：Helper 兜底职责、公共查询 Tools 和受限匿名浏览器边界。
+- `docs/helper-subgraph-design.md`：Helper 兜底职责、公共只读查询 Tools 和能力边界。
 
 ## 1. 项目目标与当前范围
 

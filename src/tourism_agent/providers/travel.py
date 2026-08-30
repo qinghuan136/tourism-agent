@@ -21,7 +21,6 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tourism_agent.infrastructure.logging_config import log_preview
-from tourism_agent.providers.browser import PlaywrightBrowserClient
 
 logger = logging.getLogger(__name__)
 NETWORK_RETRY_DELAYS = (0.5, 1.0)
@@ -766,7 +765,6 @@ class TravelQueryClients:
     places: AmapPlacesClient
     routes: AmapRouteClient
     web_search: TavilyWebSearchClient
-    browser: PlaywrightBrowserClient
 
 
 @asynccontextmanager
@@ -774,8 +772,7 @@ async def open_travel_query_clients(
     settings: TravelToolSettings,
 ) -> AsyncIterator[TravelQueryClients]:
     """打开 HTTP 客户端和持久 Tavily MCP Session。"""
-    logger.info("旅行查询客户端启动开始 provider=qweather,amap,tavily_mcp,playwright_mcp")
-    browser_client = PlaywrightBrowserClient()
+    logger.info("旅行查询客户端启动开始 provider=qweather,amap,tavily_mcp")
     mcp_client = MultiServerMCPClient(
         {
             "tavily": {
@@ -841,7 +838,6 @@ async def open_travel_query_clients(
                 tavily_map,
                 tavily_crawl,
             ),
-            browser=browser_client,
         )
         logger.info(
             "旅行查询客户端启动完成 tavily_tools=%s",
@@ -852,11 +848,8 @@ async def open_travel_query_clients(
                 tavily_crawl.name,
             ],
         )
-        try:
-            yield clients
-        finally:
-            await browser_client.close_all()
-            logger.info("旅行查询客户端关闭")
+        yield clients
+        logger.info("旅行查询客户端关闭")
 
 
 def parse_date_range(value: str) -> tuple[date, date]:

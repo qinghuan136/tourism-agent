@@ -63,9 +63,9 @@ def measure_travel_distance(origins: list[str], destination: str) -> str:
 
 
 @tool
-def browser_navigate(url: str) -> str:
-    """模拟 Planning 不应获得的浏览器 Tool。"""
-    return url
+def unrelated_read_tool(query: str) -> str:
+    """模拟 Planning 不应获得的其他只读 Tool。"""
+    return query
 
 
 @tool
@@ -201,7 +201,7 @@ def test_planning_exposes_only_current_stage_tools() -> None:
             extract_web_content,
             plan_route,
             measure_travel_distance,
-            browser_navigate,
+            unrelated_read_tool,
             forbidden_business_write,
             map_web_site,
             crawl_web_site,

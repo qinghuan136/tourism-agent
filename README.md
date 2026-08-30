@@ -20,10 +20,7 @@ TOURISM_LOG_FILE=logs/tourism-agent.log
 
 ## 启动 API 服务
 
-项目通过 `npx` 启动 Tavily MCP 和固定版本的 `@playwright/mcp@0.0.79`。运行包含网页交互的
-Helper 请求前，需要本机已安装 Node.js 和 `npx`。Windows 默认使用系统 Edge，其他平台使用
-Playwright Chromium（必要时先按 Playwright 提示安装浏览器）；
-浏览器以无登录、无持久化状态的隔离模式运行。
+项目通过 `npx` 启动 Tavily MCP，因此运行前需要本机已安装 Node.js 和 `npx`。
 
 使用项目统一入口启动，Windows 下会自动选择与 Psycopg 异步连接池兼容的事件循环：
 

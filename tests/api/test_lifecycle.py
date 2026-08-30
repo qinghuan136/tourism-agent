@@ -33,7 +33,6 @@ def test_lifespan_injects_shared_query_tools_into_root_graph(monkeypatch) -> Non
         places=object(),
         routes=object(),
         web_search=object(),
-        browser=object(),
     )
     query_tools = [
         SimpleNamespace(name="get_weather"),
@@ -45,7 +44,6 @@ def test_lifespan_injects_shared_query_tools_into_root_graph(monkeypatch) -> Non
         SimpleNamespace(name="plan_route"),
         SimpleNamespace(name="measure_travel_distance"),
     ]
-    browser_tools = [SimpleNamespace(name="browser_navigate")]
     graph = object()
     app = SimpleNamespace(state=SimpleNamespace())
     lifecycle_closed = False
@@ -79,7 +77,6 @@ def test_lifespan_injects_shared_query_tools_into_root_graph(monkeypatch) -> Non
     monkeypatch.setattr(api, "TravelToolSettings", lambda: settings)
     monkeypatch.setattr(api, "open_travel_query_clients", fake_open_clients)
     monkeypatch.setattr(api, "create_query_tools", lambda *_clients: query_tools)
-    monkeypatch.setattr(api, "create_browser_tools", lambda _client: browser_tools)
     monkeypatch.setattr(api, "build_root_graph", fake_build_root_graph)
     monkeypatch.setattr(api, "get_run_coordinator", lru_cache(lambda: object()))
     monkeypatch.setattr(api, "configure_logging", lambda _settings: None)
@@ -89,35 +86,14 @@ def test_lifespan_injects_shared_query_tools_into_root_graph(monkeypatch) -> Non
         async with api.lifespan(app):
             assert database.opened
             assert app.state.root_graph is graph
-            assert app.state.browser_client is query_clients.browser
             assert graph_arguments == {
                 "model": model,
                 "repository": repository,
-                "query_tools": [*query_tools, *browser_tools],
+                "query_tools": query_tools,
             }
 
         assert database.closed
         assert lifecycle_closed
         assert not hasattr(app.state, "root_graph")
-        assert not hasattr(app.state, "browser_client")
 
     asyncio.run(run_lifespan())
-
-
-def test_browser_cleanup_error_does_not_replace_user_response(caplog) -> None:
-    """MCP 关闭失败应写入日志，但不能覆盖已经形成的 API 结果。"""
-    from tourism_agent import api
-
-    class FailingBrowserClient:
-        async def close_thread(self, _thread_id: str) -> None:
-            raise RuntimeError("模拟浏览器关闭失败")
-
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(browser_client=FailingBrowserClient())
-        )
-    )
-
-    asyncio.run(api.close_browser_thread(request, "thread-1"))
-
-    assert "浏览器线程会话清理失败" in caplog.text

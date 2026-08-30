@@ -22,18 +22,6 @@ HELPER_QUERY_TOOL_NAMES = {
     "plan_route",
     "measure_travel_distance",
 }
-HELPER_BROWSER_TOOL_NAMES = {
-    "browser_navigate",
-    "browser_snapshot",
-    "browser_find",
-    "browser_wait_for",
-    "browser_navigate_back",
-    "browser_tabs",
-    "browser_fill_form",
-    "browser_type",
-    "browser_select_option",
-    "browser_click",
-}
 logger = logging.getLogger(__name__)
 
 
@@ -72,6 +60,6 @@ def create_helper_tools(query_tools: Sequence[BaseTool] = ()) -> list[BaseTool]:
     selected_query_tools = [
         query_tool
         for query_tool in query_tools
-        if query_tool.name in HELPER_QUERY_TOOL_NAMES | HELPER_BROWSER_TOOL_NAMES
+        if query_tool.name in HELPER_QUERY_TOOL_NAMES
     ]
     return [*selected_query_tools, ask_user]

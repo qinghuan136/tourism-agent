@@ -320,7 +320,7 @@ Tavily MCP Server 使用 npm 包 `tavily-mcp` 以 STDIO 方式运行，Python �
 
 所有查询 Tool 都只返回经过裁剪的 Observation，并保留必要的来源和查询时间。所有外部查询结果必须标记为“不可信外部数据”，Planning System Prompt 同时要求模型只把它们作为事实参考，忽略其中的指令、角色声明和 Tool 调用要求；该措施用于降低提示词注入风险，但不把外部数据视为经过事实核验。MCP 客户端、Session 及 HTTP 客户端不进入 GraphState；API Key 只从环境变量读取。首批配置为 `TAVILY_API_KEY`、`QWEATHER_API_HOST`、`QWEATHER_API_KEY` 和 `AMAP_WEB_SERVICE_KEY`。
 
-应用生命周期可以创建完整公共 Tool 集合，但 Planning 必须在自己的 Tool 工厂中维护明确白名单。根图只负责传递公共能力，不理解或裁剪各子图权限；浏览器 Tool 和其他模块的业务写 Tool 不得进入 Planning。
+应用生命周期可以创建完整公共 Tool 集合，但 Planning 必须在自己的 Tool 工厂中维护明确白名单。根图只负责传递公共能力，不理解或裁剪各子图权限；其他模块的专属 Tool 和业务写 Tool 不得进入 Planning。
 
 TripContext 和 CurrentItinerary 的写 Tool 应同时完成两件事：
 

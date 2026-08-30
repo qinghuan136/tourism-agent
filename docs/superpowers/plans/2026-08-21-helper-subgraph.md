@@ -15,7 +15,7 @@
 - Helper 只能读取业务上下文，不得修改 TripContext、CurrentItinerary 或其他长期数据。
 - 第一版只复用六个公共查询 Tools，并增加 Helper 私有 `ask_user`。
 - `ask_user` 必须独占一轮 Tool 调用，混合调用整批拒绝。
-- 不实现 Browser、订单、支付、路线 Tool、Orchestrator 协议或新数据库表。
+- 不实现通用网页自动操作、订单、支付、路线 Tool、Orchestrator 协议或新数据库表。
 - 子图不配置独立 Checkpointer，interrupt 继承根图的内存 Checkpointer。
 - 新增模块说明、Docstring、注释和异常信息使用中文。
 - 当前工作树包含本功能依赖的未提交修改；本计划不执行自动 Git commit。

@@ -106,20 +106,6 @@ class AlreadyProcessingIdempotencyRepository(ApiFakeIdempotencyRepository):
         )
 
 
-class FinishFailingIdempotencyRepository(ApiFakeIdempotencyRepository):
-    """模拟图运行后幂等终态写入持续失败。"""
-
-    async def finish(
-        self,
-        idempotency_id: UUID,
-        *,
-        status: IdempotencyStatus,
-        response_status: int,
-        response_body: dict[str, Any],
-    ) -> IdempotencyRecord:
-        raise RuntimeError("模拟幂等终态写入失败")
-
-
 def override_api_dependencies(
     api: Any,
     graph: Any,
@@ -180,16 +166,6 @@ class ApiFakeRepository:
     async def write_current_itinerary(self, trip_id: UUID, content: str) -> str:
         self.current_itinerary = content
         return content
-
-
-class FakeBrowserLifecycleClient:
-    """记录 API 是否在终态或取消时释放 thread 浏览器会话。"""
-
-    def __init__(self) -> None:
-        self.closed_threads: list[str] = []
-
-    async def close_thread(self, thread_id: str) -> None:
-        self.closed_threads.append(thread_id)
 
 
 class AssistantWriteFailingRepository(ApiFakeRepository):
@@ -425,8 +401,6 @@ def test_successful_message_clears_completed_checkpoint() -> None:
     repository = ApiFakeRepository()
     idempotency_repository = ApiFakeIdempotencyRepository()
     graph = root_graph.build_root_graph(SemanticFakeModel(), repository)
-    browser_client = FakeBrowserLifecycleClient()
-    api.app.state.browser_client = browser_client
     override_api_dependencies(api, graph, repository, idempotency_repository)
 
     try:
@@ -439,12 +413,10 @@ def test_successful_message_clears_completed_checkpoint() -> None:
         )
     finally:
         api.app.dependency_overrides.clear()
-        del api.app.state.browser_client
 
     assert response.status_code == 200
     assert snapshot.values == {}
     assert snapshot.interrupts == ()
-    assert browser_client.closed_threads == [str(TRIP_ID)]
 
 
 def test_root_graph_config_leaves_headroom_for_helper_react_budget() -> None:
@@ -461,8 +433,6 @@ def test_message_endpoint_resumes_pending_agent_question() -> None:
     repository = ApiFakeRepository()
     idempotency_repository = ApiFakeIdempotencyRepository()
     graph = root_graph.build_root_graph(QuestionAskingFakeModel(), repository)
-    browser_client = FakeBrowserLifecycleClient()
-    api.app.state.browser_client = browser_client
     override_api_dependencies(api, graph, repository, idempotency_repository)
 
     try:
@@ -471,14 +441,12 @@ def test_message_endpoint_resumes_pending_agent_question() -> None:
             "/messages",
             json=message_payload("帮我规划杭州旅行", IDEMPOTENCY_ID_1),
         )
-        assert browser_client.closed_threads == [str(TRIP_ID)]
         second = client.post(
             "/messages",
             json=message_payload("5000元", IDEMPOTENCY_ID_2),
         )
     finally:
         api.app.dependency_overrides.clear()
-        del api.app.state.browser_client
 
     assert first.status_code == 200
     assert first.json() == {
@@ -500,7 +468,6 @@ def test_message_endpoint_resumes_pending_agent_question() -> None:
         ConversationRole.USER,
         ConversationRole.ASSISTANT,
     ]
-    assert browser_client.closed_threads == [str(TRIP_ID), str(TRIP_ID)]
 
 
 def test_cancel_pending_question_makes_next_message_start_from_root() -> None:
@@ -510,8 +477,6 @@ def test_cancel_pending_question_makes_next_message_start_from_root() -> None:
     repository = ApiFakeRepository()
     idempotency_repository = ApiFakeIdempotencyRepository()
     graph = root_graph.build_root_graph(QuestionAskingFakeModel(), repository)
-    browser_client = FakeBrowserLifecycleClient()
-    api.app.state.browser_client = browser_client
     override_api_dependencies(api, graph, repository, idempotency_repository)
 
     try:
@@ -530,15 +495,9 @@ def test_cancel_pending_question_makes_next_message_start_from_root() -> None:
         )
     finally:
         api.app.dependency_overrides.clear()
-        del api.app.state.browser_client
 
     assert cancelled.status_code == 200
     assert cancelled.json() == {"cancelled": True}
-    assert browser_client.closed_threads == [
-        str(TRIP_ID),
-        str(TRIP_ID),
-        str(TRIP_ID),
-    ]
     assert restarted.status_code == 200
     assert restarted.json() == {
         "route": "planning",
@@ -555,8 +514,6 @@ def test_failed_question_persistence_discards_pending_checkpoint() -> None:
     repository = AssistantWriteFailingRepository()
     idempotency_repository = ApiFakeIdempotencyRepository()
     graph = root_graph.build_root_graph(QuestionAskingFakeModel(), repository)
-    browser_client = FakeBrowserLifecycleClient()
-    api.app.state.browser_client = browser_client
     override_api_dependencies(api, graph, repository, idempotency_repository)
 
     try:
@@ -571,7 +528,6 @@ def test_failed_question_persistence_discards_pending_checkpoint() -> None:
         )
     finally:
         api.app.dependency_overrides.clear()
-        del api.app.state.browser_client
 
     assert failed.status_code == 500
     assert restarted.status_code == 200
@@ -581,31 +537,6 @@ def test_failed_question_persistence_discards_pending_checkpoint() -> None:
         "candidate_itinerary": None,
         "current_itinerary": None,
     }
-    assert browser_client.closed_threads == [str(TRIP_ID), str(TRIP_ID)]
-
-
-def test_browser_session_is_closed_when_idempotency_finish_fails() -> None:
-    """图已经启动后，即使幂等结果写入失败也必须释放浏览器会话。"""
-    api = import_module("tourism_agent.api")
-    root_graph = import_module("tourism_agent.graph.root")
-    repository = ApiFakeRepository()
-    idempotency_repository = FinishFailingIdempotencyRepository()
-    graph = root_graph.build_root_graph(SemanticFakeModel(), repository)
-    browser_client = FakeBrowserLifecycleClient()
-    api.app.state.browser_client = browser_client
-    override_api_dependencies(api, graph, repository, idempotency_repository)
-
-    try:
-        response = TestClient(api.app, raise_server_exceptions=False).post(
-            "/messages",
-            json=message_payload("帮我规划北京三日游"),
-        )
-    finally:
-        api.app.dependency_overrides.clear()
-        del api.app.state.browser_client
-
-    assert response.status_code == 500
-    assert browser_client.closed_threads == [str(TRIP_ID)]
 
 
 def test_api_returns_itinerary_separately_without_polluting_conversation() -> None:

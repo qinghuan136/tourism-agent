@@ -81,16 +81,10 @@ def forbidden_context_write(patch: dict[str, Any]) -> str:
     raise AssertionError(f"Helper 不得执行写 Tool：{patch}")
 
 
-@tool("browser_snapshot")
-def fake_browser_snapshot() -> str:
-    """返回固定页面快照，验证浏览器 Tool 白名单。"""
-    return "公开页面快照"
-
-
-@tool("browser_click")
-def fake_browser_click(target: str) -> str:
-    """返回固定点击结果，验证同轮浏览器动作限制。"""
-    return f"已点击：{target}"
+@tool("unrelated_read_tool")
+def unrelated_read_tool() -> str:
+    """模拟不属于 Helper 当前职责的其他只读 Tool。"""
+    return "其他模块数据"
 
 
 @tool("plan_route")
@@ -203,41 +197,6 @@ class MixedAskHelperModel:
                         "name": "ask_user",
                         "args": {"question": "你想查询哪个城市？"},
                         "id": "mixed-ask-1",
-                        "type": "tool_call",
-                    },
-                ],
-            )
-
-        return RunnableLambda(respond)
-
-
-class MultipleBrowserActionsHelperModel:
-    """故意同轮调用两个浏览器动作，验证程序流整批拒绝。"""
-
-    def __init__(self) -> None:
-        self.rejections: list[str] = []
-
-    def bind_tools(self, _tools: list[BaseTool]) -> RunnableLambda:
-        def respond(messages: list[BaseMessage]) -> AIMessage:
-            observations = [
-                message for message in messages if isinstance(message, ToolMessage)
-            ]
-            if observations:
-                self.rejections = [str(message.content) for message in observations]
-                return AIMessage(content="我会改为逐个操作公开网页。")
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "browser_snapshot",
-                        "args": {},
-                        "id": "browser-snapshot-1",
-                        "type": "tool_call",
-                    },
-                    {
-                        "name": "browser_click",
-                        "args": {"target": "e10"},
-                        "id": "browser-click-1",
                         "type": "tool_call",
                     },
                 ],
@@ -391,15 +350,14 @@ def test_helper_rejects_entire_batch_when_ask_user_is_mixed() -> None:
     assert all("必须独占一轮" in message for message in model.rejections)
 
 
-def test_helper_binds_route_and_browser_tools_but_not_business_writes() -> None:
-    """Helper 应获得新增只读能力，同时继续排除业务写 Tool。"""
+def test_helper_exposes_only_allowed_query_tools() -> None:
+    """Helper 只绑定获准的公共查询能力，排除无关能力和业务写 Tool。"""
     tools_module = import_module("tourism_agent.graph.subgraphs.helper.tools")
 
     tools = tools_module.create_helper_tools(
         [
             fake_plan_route,
-            fake_browser_snapshot,
-            fake_browser_click,
+            unrelated_read_tool,
             forbidden_site_map,
             forbidden_site_crawl,
             forbidden_context_write,
@@ -408,21 +366,8 @@ def test_helper_binds_route_and_browser_tools_but_not_business_writes() -> None:
 
     assert [item.name for item in tools] == [
         "plan_route",
-        "browser_snapshot",
-        "browser_click",
         "ask_user",
     ]
-
-
-def test_helper_rejects_multiple_browser_actions_in_one_tool_round() -> None:
-    """两个有顺序依赖的浏览器动作不得由 ToolNode 并行执行。"""
-    model = MultipleBrowserActionsHelperModel()
-
-    result = invoke_helper(model, [fake_browser_snapshot, fake_browser_click])
-
-    assert result["assistant_message"] == "我会改为逐个操作公开网页。"
-    assert len(model.rejections) == 2
-    assert all("浏览器动作必须逐轮串行" in message for message in model.rejections)
 
 
 def test_helper_force_finalizes_after_twenty_react_tool_rounds() -> None:
