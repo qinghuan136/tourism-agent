@@ -20,6 +20,12 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
 
+from tourism_agent.graph.history import (
+    ConversationHistorySearcher,
+    conversation_exchange_ids,
+    format_related_history,
+    load_related_history,
+)
 from tourism_agent.graph.messages import conversation_to_messages
 from tourism_agent.graph.subgraphs.planning.state import PlanningState
 from tourism_agent.graph.subgraphs.planning.tools import create_planning_tools
@@ -242,17 +248,21 @@ def build_system_prompt(state: PlanningState) -> str:
         "current_itinerary": state.get("current_itinerary"),
         "candidate_itinerary": state.get("candidate_itinerary"),
     }
-    return (
+    related_history = format_related_history(state.get("retrieved_history", []))
+    prompt = (
         f"{PLANNING_SYSTEM_PROMPT}\n\n"
         f"当前日期：{datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()}\n"
         f"当前业务上下文：\n{json.dumps(context, ensure_ascii=False)}"
     )
+    return f"{prompt}\n\n{related_history}" if related_history else prompt
 
 
 def build_planning_graph(
     model: BaseChatModel,
     repository: PlanningRepository,
     query_tools: Sequence[BaseTool] = (),
+    *,
+    retrieval_service: ConversationHistorySearcher | None = None,
 ) -> CompiledStateGraph:
     """构建先加载业务快照、再进入 Agent/Tool 循环的 Planning 子图。"""
     context_builder = PlanningContextBuilder(repository)
@@ -265,20 +275,37 @@ def build_planning_graph(
             state["trip_id"],
             state["user_message_id"],
         )
+        current_message = cast(HumanMessage, state["messages"][0])
+        retrieval_query = state.get("retrieval_query") or current_message.text
         snapshot = await context_builder.build(
             state["trip_id"],
             state["user_message_id"],
         )
+        retrieved_history = await load_related_history(
+            retrieval_service,
+            user_id=state["user_id"],
+            trip_id=state["trip_id"],
+            query=retrieval_query,
+            exclude_exchange_ids=conversation_exchange_ids(
+                snapshot.conversation_context
+            ),
+            current_user_input=state.get("retrieval_user_input", current_message.text),
+            task_goal=state.get("retrieval_task_goal", retrieval_query),
+            recent_conversation=snapshot.conversation_context,
+        )
         logger.info(
             "Planning上下文加载完成 trip_id=%s conversation_count=%d "
-            "trip_context_keys=%s has_current_itinerary=%s",
+            "retrieved_history_count=%d trip_context_keys=%s "
+            "has_current_itinerary=%s",
             state["trip_id"],
             len(snapshot.conversation_context),
+            len(retrieved_history),
             list(snapshot.trip_context),
             snapshot.current_itinerary is not None,
         )
         return {
             "conversation_context": snapshot.conversation_context,
+            "retrieved_history": retrieved_history,
             "trip_context": snapshot.trip_context,
             "current_itinerary": snapshot.current_itinerary,
         }

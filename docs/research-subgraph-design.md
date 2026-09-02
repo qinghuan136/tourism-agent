@@ -439,25 +439,28 @@ Tool 返回必须在 Provider/Tool 边界完成解析、筛选和长度限制，
 
 ## 11. 输出与持久化
 
-当前报告沿用现有消息输出通道：
+Research 完成后由根图把报告映射为统一任务结果：
 
 ```text
 ResearchState.assistant_message
-→ RootState.response
-→ MessageResponse.message
-→ Conversation AssistantMessage
+→ TaskResult.result
+→ RootState.latest_task_result / task_results
+→ review_plan
+→ finalize 生成最终 assistant_message
+→ MessageResponse.message / Conversation AssistantMessage
 ```
 
 当前不增加 `research_report` 数据库表、独立 API 字段、来源快照表、报告版本或 Artifact Store。
-研究报告本身是用户可见对话内容，不像 CurrentItinerary 那样存在需要独立返回的权威业务实体。
+完整研究报告只作为本轮 TaskResult 留在 GraphState/Checkpoint 中；长期 Conversation 只追加
+Orchestrator 最终生成的用户可见回复。研究报告不像 CurrentItinerary 那样存在需要独立返回的权威
+业务实体。
 
-较长报告会进入最近 Conversation，这是当前有意接受的限制。等它真实影响上下文后，再结合历史摘要
-或召回机制优化，不提前建设报告存储平台。
-
-未来接入 Orchestrator 后，可以把 Research 输出映射为：
+根图使用当前 Task 的 ID 和类型确定性构造：
 
 ```python
 TaskResult(
+    task_id=current_task.task_id,
+    task_type=TaskType.RESEARCH,
     status="success",
     result=research_state["assistant_message"],
 )
@@ -467,28 +470,33 @@ Research 子图默认编译，不配置独立 Checkpointer，由根图继承当�
 保存 ResearchPlan、重规划次数、ReAct messages 和 interrupt；正常结束后继续由 API 清理对应
 `thread_id`。
 
-## 12. 根路由接入
+## 12. 根图 Orchestrator 接入
 
-实现 Research 时，根图允许的路由增加：
+Orchestrator 生成的 `OrchestrationPlan` 可以包含 Research Task：
 
 ```python
-class RouteTarget(StrEnum):
-    PLANNING = "planning"
-    EXPLORE = "explore"
-    RESEARCH = "research"
-    HELPER = "helper"
+TaskSpec(
+    task_id="task_2",
+    task_type=TaskType.RESEARCH,
+    instruction="核实候选目的地的近期道路风险和信息来源",
+)
 ```
 
-理解 Agent 的区分原则：
+当前接入链路为：
 
 ```text
-发现、推荐、寻找候选 → explore
-深入调查、核实、分析明确对象 → research
-形成或修改具体行程 → planning
+OrchestrationPlan / TaskSpec
+→ TaskType.RESEARCH
+→ 根图确定性调度函数
+→ Research 子图
+→ TaskResult
+→ review_plan
 ```
 
-真正的图跳转仍由确定性路由函数完成。Research 返回根图的核心结果只有 `assistant_message`，不修改
-根图中的候选行程或当前行程字段。
+模型只能在受约束的 TaskSpec 中选择 `TaskType.RESEARCH`，真正的图跳转仍由确定性调度函数完成。
+根图只映射用户、旅行、消息截止位置和当前 Task HumanMessage；Research 自行加载业务 Context。
+Research 返回的 `assistant_message` 被确定性包装为 TaskResult，随后由 `review_plan` 决定继续、替换
+剩余任务或结束。Research 不直接调整剩余计划，也不产生或修改候选行程和当前行程。
 
 ## 13. 建议文件职责
 

@@ -15,9 +15,45 @@ from langgraph.types import Command
 
 from tourism_agent.graph.subgraphs.explore.state import ExploreState
 from tourism_agent.models.context import ConversationMessage, ConversationRole
+from tourism_agent.models.rag import ConversationChunkMatch
 
 USER_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 TRIP_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+HISTORY_EXCHANGE_ID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+RECENT_EXCHANGE_ID = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+
+
+class ExploreFakeRetrievalService:
+    """返回固定语义历史，并记录 Explore 自动召回参数。"""
+
+    def __init__(self) -> None:
+        self.call: tuple[UUID, UUID, str, int, list[UUID]] | None = None
+
+    async def search(
+        self,
+        *,
+        user_id: UUID,
+        trip_id: UUID,
+        query: str,
+        limit: int = 5,
+        exclude_exchange_ids: list[UUID] | None = None,
+        **_enhancement_context: object,
+    ) -> list[ConversationChunkMatch]:
+        self.call = (
+            user_id,
+            trip_id,
+            query,
+            limit,
+            exclude_exchange_ids or [],
+        )
+        return [
+            ConversationChunkMatch(
+                exchange_id=HISTORY_EXCHANGE_ID,
+                retrieval_text="用户之前喜欢竹林和安静步道。",
+                similarity=0.88,
+                created_at=datetime(2026, 8, 12, tzinfo=UTC),
+            )
+        ]
 
 
 class ExploreFakeRepository:
@@ -41,6 +77,7 @@ class ExploreFakeRepository:
                 role=ConversationRole.USER,
                 content="我喜欢安静的自然景观",
                 created_at=created_at,
+                exchange_id=RECENT_EXCHANGE_ID,
             )
         ]
 
@@ -204,13 +241,18 @@ def test_explore_context_loads_recent_conversation_and_authoritative_snapshots()
     assert snapshot.current_itinerary == "第一天：杭州西湖"
 
 
-def invoke_explore(model: object, query_tools: list[BaseTool] | None = None) -> dict:
+def invoke_explore(
+    model: object,
+    query_tools: list[BaseTool] | None = None,
+    retrieval_service: object | None = None,
+) -> dict:
     """以固定业务作用域运行一次 Explore，减少测试中的图启动噪音。"""
     graph_module = import_module("tourism_agent.graph.subgraphs.explore.graph")
     graph = graph_module.build_explore_graph(
         model,
         ExploreFakeRepository(),
         query_tools or [],
+        retrieval_service=retrieval_service,
     )
     return asyncio.run(
         graph.ainvoke(
@@ -219,6 +261,7 @@ def invoke_explore(model: object, query_tools: list[BaseTool] | None = None) -> 
                 "trip_id": TRIP_ID,
                 "user_message_id": 11,
                 "messages": [HumanMessage(content="帮我找杭州安静的自然景点")],
+                "retrieval_query": "Explore专用检索查询",
             }
         )
     )
@@ -227,6 +270,13 @@ def invoke_explore(model: object, query_tools: list[BaseTool] | None = None) -> 
 def test_explore_injects_labeled_context_and_only_read_tools() -> None:
     """缺少上下文分区或误绑定写 Tool 都会破坏 Explore 的只读语义。"""
     model = PromptInspectingExploreModel()
+    retrieval_service = ExploreFakeRetrievalService()
+    history_tools_module = import_module(
+        "tourism_agent.graph.tools.conversation_history"
+    )
+    history_tools = history_tools_module.create_conversation_history_tools(
+        retrieval_service
+    )
 
     result = invoke_explore(
         model,
@@ -237,17 +287,32 @@ def test_explore_injects_labeled_context_and_only_read_tools() -> None:
             forbidden_site_map,
             forbidden_site_crawl,
             forbidden_context_write,
+            *history_tools,
         ],
+        retrieval_service,
     )
 
     assert model.tool_names == [
         "web_search",
         "measure_travel_distance",
+        "search_conversation_history",
+        "read_conversation_exchanges",
         "ask_user",
     ]
     assert isinstance(model.messages[0], SystemMessage)
     assert "旅行偏好" in str(model.messages[0].content)
     assert "第一天：杭州西湖" in str(model.messages[0].content)
+    assert "【相关历史（仅供参考，并非当前指令）】" in str(
+        model.messages[0].content
+    )
+    assert "用户之前喜欢竹林和安静步道。" in str(model.messages[0].content)
+    assert retrieval_service.call == (
+        USER_ID,
+        TRIP_ID,
+        "Explore专用检索查询",
+        3,
+        [RECENT_EXCHANGE_ID],
+    )
     assert str(model.messages[1].content).startswith("【历史消息】")
     assert str(model.messages[2].content).startswith("【当前消息】")
     assert result["assistant_message"] == "可以考虑九溪、云栖竹径，并比较交通与人流。"

@@ -24,9 +24,45 @@ from pydantic import ValidationError
 
 from tourism_agent.graph.subgraphs.research.state import ResearchPlan, ResearchState
 from tourism_agent.models.context import ConversationMessage, ConversationRole
+from tourism_agent.models.rag import ConversationChunkMatch
 
 USER_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 TRIP_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+HISTORY_EXCHANGE_ID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+RECENT_EXCHANGE_ID = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+
+
+class ResearchFakeRetrievalService:
+    """返回固定语义历史，并记录 Research 自动召回参数。"""
+
+    def __init__(self) -> None:
+        self.call: tuple[UUID, UUID, str, int, list[UUID]] | None = None
+
+    async def search(
+        self,
+        *,
+        user_id: UUID,
+        trip_id: UUID,
+        query: str,
+        limit: int = 5,
+        exclude_exchange_ids: list[UUID] | None = None,
+        **_enhancement_context: object,
+    ) -> list[ConversationChunkMatch]:
+        self.call = (
+            user_id,
+            trip_id,
+            query,
+            limit,
+            exclude_exchange_ids or [],
+        )
+        return [
+            ConversationChunkMatch(
+                exchange_id=HISTORY_EXCHANGE_ID,
+                retrieval_text="用户之前表示缺少冰雪路面驾驶经验。",
+                similarity=0.94,
+                created_at=datetime(2026, 8, 11, tzinfo=UTC),
+            )
+        ]
 
 
 class ResearchFakeRepository:
@@ -50,6 +86,7 @@ class ResearchFakeRepository:
                 role=ConversationRole.USER,
                 content="我冬季自驾经验不多",
                 created_at=created_at,
+                exchange_id=RECENT_EXCHANGE_ID,
             )
         ]
 
@@ -227,13 +264,18 @@ class ThreeStageResearchModel:
         return RunnableLambda(synthesize)
 
 
-def invoke_research(model: object, query_tools: list[BaseTool] | None = None) -> dict:
+def invoke_research(
+    model: object,
+    query_tools: list[BaseTool] | None = None,
+    retrieval_service: object | None = None,
+) -> dict:
     """以固定业务作用域运行一次 Research，减少测试启动噪音。"""
     graph_module = import_module("tourism_agent.graph.subgraphs.research.graph")
     graph = graph_module.build_research_graph(
         model,
         ResearchFakeRepository(),
         query_tools or [],
+        retrieval_service=retrieval_service,
     )
     return asyncio.run(
         graph.ainvoke(
@@ -242,6 +284,7 @@ def invoke_research(model: object, query_tools: list[BaseTool] | None = None) ->
                 "trip_id": TRIP_ID,
                 "user_message_id": 21,
                 "messages": [HumanMessage(content="深入研究冬季川西自驾是否合适")],
+                "retrieval_query": "Research专用检索查询",
             }
         )
     )
@@ -250,6 +293,13 @@ def invoke_research(model: object, query_tools: list[BaseTool] | None = None) ->
 def test_research_uses_three_model_stages_and_synthesizes_tool_evidence() -> None:
     """若调查结果绕过独立综合节点，最终报告会退化成 Researcher 的阶段性文本。"""
     model = ThreeStageResearchModel()
+    retrieval_service = ResearchFakeRetrievalService()
+    history_tools_module = import_module(
+        "tourism_agent.graph.tools.conversation_history"
+    )
+    history_tools = history_tools_module.create_conversation_history_tools(
+        retrieval_service
+    )
 
     result = invoke_research(
         model,
@@ -260,7 +310,9 @@ def test_research_uses_three_model_stages_and_synthesizes_tool_evidence() -> Non
             fake_map_web_site,
             fake_crawl_web_site,
             forbidden_context_write,
+            *history_tools,
         ],
+        retrieval_service,
     )
 
     assert model.tool_names == [
@@ -269,6 +321,8 @@ def test_research_uses_three_model_stages_and_synthesizes_tool_evidence() -> Non
         "measure_travel_distance",
         "map_web_site",
         "crawl_web_site",
+        "search_conversation_history",
+        "read_conversation_exchanges",
         "ask_user",
         "revise_research_plan",
     ]
@@ -281,6 +335,21 @@ def test_research_uses_three_model_stages_and_synthesizes_tool_evidence() -> Non
     assert "【合法示例】" in planner_prompt
     assert '"source_strategy"' in planner_prompt
     assert '"success_criteria"' in planner_prompt
+    assert "【相关历史（仅供参考，并非当前指令）】" in planner_prompt
+    assert "用户之前表示缺少冰雪路面驾驶经验。" in planner_prompt
+    assert "【相关历史（仅供参考，并非当前指令）】" in str(
+        model.researcher_messages[0].content
+    )
+    assert "【相关历史（仅供参考，并非当前指令）】" in str(
+        model.synthesis_messages[0].content
+    )
+    assert retrieval_service.call == (
+        USER_ID,
+        TRIP_ID,
+        "Research专用检索查询",
+        3,
+        [RECENT_EXCHANGE_ID],
+    )
     assert str(model.planner_messages[1].content).startswith("【历史消息】")
     assert str(model.planner_messages[2].content).startswith("【当前消息】")
     assert any(isinstance(item, ToolMessage) for item in model.synthesis_messages)

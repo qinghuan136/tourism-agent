@@ -10,7 +10,12 @@ from langchain_core.runnables import RunnableLambda
 
 from tourism_agent.graph.root import build_root_graph
 from tourism_agent.models.context import ConversationMessage, ConversationRole
-from tourism_agent.models.contracts import IntentDecision, RouteTarget
+from tourism_agent.models.orchestration import (
+    OrchestrationPlan,
+    PlanReviewDecision,
+    TaskSpec,
+    TaskType,
+)
 
 USER_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 TRIP_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
@@ -56,32 +61,46 @@ class RoutingContextRepository:
 class BoundaryAwareRoutingModel:
     """只有明确识别历史区和当前消息区时才采用历史语义。"""
 
-    def with_structured_output(self, schema: type[IntentDecision]) -> RunnableLambda:
+    def with_structured_output(self, schema: type[Any]) -> RunnableLambda:
         def decide(messages: list[BaseMessage]) -> Any:
+            if schema is PlanReviewDecision:
+                return schema(action="finish", reason="当前任务已经完成")
             system_prompt = str(messages[0].content)
             history = messages[1:-1]
             current = str(messages[-1].content)
             boundaries_are_clear = (
                 "历史消息" in system_prompt
                 and "当前消息" in system_prompt
-                and "只为" in system_prompt
+                and "只能处理最后一条" in system_prompt
                 and all(str(message.content).startswith("【历史消息】") for message in history)
                 and current.startswith("【当前消息】")
             )
             has_explore_context = any(
                 "海岛旅行灵感" in str(message.content) for message in history
             )
-            route = (
-                RouteTarget.EXPLORE
+            task_type = (
+                TaskType.EXPLORE
                 if boundaries_are_clear and has_explore_context and "就按这个" in current
-                else RouteTarget.HELPER
+                else TaskType.HELPER
             )
-            return schema(route=route)
+            return OrchestrationPlan(
+                goal="继续处理上一轮旅行话题",
+                tasks=[
+                    TaskSpec(
+                        task_id="task_1",
+                        task_type=task_type,
+                        instruction="根据历史语义处理当前请求",
+                    )
+                ],
+            )
 
         return RunnableLambda(decide)
 
     def bind_tools(self, _tools: list[object]) -> RunnableLambda:
         return RunnableLambda(lambda _messages: AIMessage(content="未进入 Planning"))
+
+    def with_config(self, **_kwargs: Any) -> RunnableLambda:
+        return RunnableLambda(lambda _messages: AIMessage(content="已完成当前请求"))
 
 
 def test_root_routes_current_message_with_clearly_labeled_recent_history() -> None:
@@ -105,7 +124,7 @@ def test_root_routes_current_message_with_clearly_labeled_recent_history() -> No
         (TRIP_ID, 40, 4),
         (TRIP_ID, 40, 8),
     ]
-    assert result["route"] is RouteTarget.EXPLORE
+    assert result["route"] is TaskType.EXPLORE
 
 
 class ResearchRoutingModel:
@@ -113,8 +132,19 @@ class ResearchRoutingModel:
 
     def with_structured_output(self, schema: type[Any]) -> RunnableLambda:
         def respond(_messages: list[BaseMessage]) -> Any:
-            if schema is IntentDecision:
-                return schema(route="research")
+            if schema is OrchestrationPlan:
+                return schema(
+                    goal="核实冬季川西自驾安全性",
+                    tasks=[
+                        TaskSpec(
+                            task_id="task_1",
+                            task_type="research",
+                            instruction="深入调查冬季川西自驾安全性",
+                        )
+                    ],
+                )
+            if schema is PlanReviewDecision:
+                return schema(action="finish", reason="调查任务已经完成")
             return schema(
                 goal="核实冬季川西自驾安全性",
                 tasks=["核实道路风险", "调查驾驶要求", "比较替代交通"],
@@ -164,8 +194,19 @@ class HelperRoutingModel:
 
     def with_structured_output(self, schema: type[Any]) -> RunnableLambda:
         def respond(_messages: list[BaseMessage]) -> Any:
-            if schema is IntentDecision:
-                return schema(route="helper")
+            if schema is OrchestrationPlan:
+                return schema(
+                    goal="查询广州塔停止入场时间",
+                    tasks=[
+                        TaskSpec(
+                            task_id="task_1",
+                            task_type="helper",
+                            instruction="回答广州塔停止入场时间",
+                        )
+                    ],
+                )
+            if schema is PlanReviewDecision:
+                return schema(action="finish", reason="轻量查询已经完成")
             return schema(
                 goal="备用研究目标",
                 tasks=["核实备用信息", "比较备用信息"],
@@ -182,7 +223,9 @@ class HelperRoutingModel:
         )
 
     def with_config(self, **_kwargs: Any) -> RunnableLambda:
-        return RunnableLambda(lambda _messages: AIMessage(content="备用研究报告"))
+        return RunnableLambda(
+            lambda _messages: AIMessage(content="广州塔停止入场时间应以当天预约页面为准。")
+        )
 
 
 def test_root_routes_lightweight_request_and_maps_helper_response() -> None:

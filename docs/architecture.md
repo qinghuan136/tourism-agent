@@ -23,9 +23,9 @@
 ```text
 用户输入
 → API 根据活动任务与 checkpoint 决定新运行或恢复
-→ 根图中的理解 Agent 识别路由目标
-→ 确定性路由函数进入 Planning Agent
-→ Planning Agent 通过 ReAct 按需提问和调用 Tools
+→ 根图 Orchestrator 根据当前目标生成受约束的顺序 Task 计划
+→ 确定性调度函数进入 Planning、Explore、Research 或 Helper 子图
+→ 每个 Task 结束后，Orchestrator 根据 TaskResult 复核并调整剩余计划
 → 如本轮产生或修改行程，用户确认当前方案
 → 确认后写入 CurrentItinerary
 → 后端分别返回对话结果和当前行程
@@ -35,11 +35,13 @@
 
 ## 2. 总体设计原则
 
-### 2.1 根图只理解和路由
+### 2.1 根图只编排，不执行领域任务
 
-根图中的理解 Agent 只判断当前请求应该由哪个业务模块处理，不负责旅行规划，不调用领域 Tools，也不修改旅行事实或行程。
+根图中的 Orchestrator 负责理解用户目标、生成初始 Task 计划、调度业务子图、复核 TaskResult 和
+整理最终回复。它不负责旅行规划或调研，不调用领域 Tools，也不修改旅行事实或行程。
 
-理解 Agent 输出受约束的路由结果，随后由普通程序路由到对应模块。LLM 负责理解语义，程序负责保证实际跳转目标确定且可检查。
+Orchestrator 输出受约束的 Task 类型和计划复核决策，随后由普通程序路由到对应模块。LLM 负责
+语义决策，程序负责保证任务数量、可用模块和实际跳转目标确定且可检查。
 
 ### 2.2 每个业务模块只设置一个 Agent
 
@@ -51,7 +53,7 @@ Planning、未来的 Inspiration、Booking 等模块可以分别拥有自己的 
 
 旅行研究、信息搜索、方案生成和是否需要追问等开放问题，允许 Agent 使用 ReAct 自主判断。
 
-路由、候选方案确认、CurrentItinerary 写入、金额计算、库存判断、订单状态和未来的支付、预订、取消、退款等关键行为由确定性代码控制。完整方案是否通过候选提交 Tool 交付当前仍由强 Prompt 约束，但候选提交后的确认与写入不再依赖模型判断。
+Task 类型校验与实际调度、候选方案确认、CurrentItinerary 写入、金额计算、库存判断、订单状态和未来的支付、预订、取消、退款等关键行为由确定性代码控制。完整方案是否通过候选提交 Tool 交付当前仍由强 Prompt 约束，但候选提交后的确认与写入不再依赖模型判断。
 
 ### 2.4 不把开放旅行需求强行固定成字段表
 
@@ -70,8 +72,8 @@ flowchart TD
     UI["客户端 / UI"] --> API["API 与运行控制"]
     API --> ROOT["LangGraph 根图"]
 
-    ROOT --> UNDERSTAND["理解 Agent\n只输出路由意图"]
-    UNDERSTAND --> ROUTER["确定性路由函数"]
+    ROOT --> ORCHESTRATOR["Orchestrator\n计划 / 复核 / 最终回复"]
+    ORCHESTRATOR --> ROUTER["确定性 Task 调度"]
 
     ROUTER --> PLAN_LOAD["Planning 子图\nload_context"]
     PLAN_LOAD --> PLAN["Planning Agent\n持续 ReAct"]
@@ -81,6 +83,11 @@ flowchart TD
 
     PLAN --> TOOLS["搜索 / 查询 / 状态读写 Tools"]
     PLAN --> ASK["ask_user / interrupt"]
+    PLAN --> RESULT["TaskResult"]
+    EXPLORE --> RESULT
+    RESEARCH --> RESULT
+    HELPER --> RESULT
+    RESULT --> ORCHESTRATOR
 
     MEMORY["PostgreSQL 权威数据\nConversation / TripContext\nCurrentItinerary"]
     MEMORY --> PLAN_CONTEXT["PlanningContextBuilder"]
@@ -94,24 +101,31 @@ flowchart TD
 
 ## 4. 根图设计
 
-### 4.1 理解 Agent
+### 4.1 Orchestrator
 
-理解 Agent 根据当前用户输入和当前消息之前最近 4 条 Conversation 判断目标模块。近期历史只用于理解“还是第二个”“把刚才那个换掉”等指代、省略和语义承接；不能为了路由预先加载完整 TripContext 或 CurrentItinerary。
+Orchestrator 根据当前用户输入和当前消息之前最近 4 条 Conversation 生成初始顺序计划。近期历史
+只用于理解“还是第二个”“把刚才那个换掉”等指代、省略和语义承接；不能为了编排预先加载完整
+TripContext 或 CurrentItinerary。
 
-理解 Agent 只输出目标路由。无法明确归入 Planning、Explore 或 Research 的请求默认进入 Helper；
-根图不根据自己对 Tool 能力的猜测提前拒绝请求。
+简单请求只生成一个 Task；复合请求可以包含多个 Task。每个 Task 结束后，Orchestrator 根据全部
+原始 TaskResult 决定继续、替换剩余计划或结束，并在继续执行时整理一份面向下一 Task 的
+`handoff_context`。无法明确归入 Planning、Explore 或 Research 的请求进入 Helper，根图不根据
+自己对 Tool 能力的猜测提前拒绝请求。
 
 它不负责：
 
 - 提取一套完整旅行字段；
 - 判断全部信息是否完整；
 - 调用搜索、行程或记忆 Tools；
-- 直接回答业务问题；
+- 调用子图内部 Tool 或直接完成业务任务；
 - 决定支付、预订等副作用是否执行。
 
-### 4.2 确定性路由
+详细 Task 契约、State、RAG 和恢复规则见 `docs/travel_agent_orchestrator_task_design.md`。
 
-理解 Agent 的输出必须映射到代码中已经注册的节点。实际 Graph 跳转由条件路由函数完成，不允许模型任意生成节点名或直接控制系统主流程。
+### 4.2 确定性 Task 调度
+
+Orchestrator 的 Task 类型必须映射到代码中已经注册的节点。实际 Graph 跳转由条件路由函数完成，
+不允许模型任意生成节点名或直接控制系统主流程。
 
 当前保留：
 
@@ -120,13 +134,23 @@ flowchart TD
 - `research`：进入深度调研模块；
 - `helper`：处理轻量任务，并对其他请求提供兜底回答、能力说明或安全拒绝。
 
-新增路由应与新增业务模块同时设计，不提前放置大量空路由。
+新增 Task 类型应与新增业务模块同时设计，不提前放置大量空路由。当前每次请求最多完成五个
+Task，并且只按顺序执行，不构建并行 DAG。
 
 ### 4.3 根图与模块 State
 
 根图和模块子图分别使用满足当前职责的最小 State。两者通过明确的输入映射交换数据，不共享一个不断膨胀的万能 State。
 
-根图只携带当前请求、`user_id`、`trip_id`、当前消息记录 ID、路由结果和模块输出。消息记录 ID 仅作为子图加载历史时的截止位置，避免当前请求被重复注入；它不是业务 Context。确定路由后，根图把这些最小标识和当前请求映射给目标子图；每个子图在进入后通过自己的 `load_context` 节点和 Context Builder 按需加载业务信息。RootState 不转存 TripContext、CurrentItinerary 或模块内部 ReAct messages。
+根图携带当前请求、可信作用域、待执行 Task、当前 Task、只追加的原始 TaskResult、当前
+`handoff_context`、执行计数和对外输出。
+消息记录 ID 仅作为子图加载历史时的截止位置，避免当前请求被重复注入；它不是业务 Context。
+每个子图在进入后通过自己的 `load_context` 节点和 Context Builder 按需加载业务信息。
+根图不会预加载 TripContext 或 CurrentItinerary 作为各子图的上下文，也不转存模块内部 ReAct
+messages；但 RootState 会携带子图返回的 `candidate_itinerary` / `current_itinerary`，作为本轮 API
+响应的独立输出字段。
+
+为兼容现有消息 API，`route` 字段继续返回最近一次完成或当前中断的 Task 类型；它不再表示整轮
+请求只进入过一个模块。
 
 `thread_id` 通过 LangGraph 运行配置传入，不写入 GraphState。
 
@@ -159,7 +183,7 @@ ReAct 循环必须限制最大步数、可用 Tool 范围和外部调用超时�
 | `Conversation` | 保存用户可见的原始对话 | 只追加 | 是，代表原始交流历史 |
 | `TripContext` | 保存当前旅行有效的事实和个性化要求 | Agent 通过 Tool 增删改查 | 是，代表当前旅行上下文 |
 | `CurrentItinerary` | 保存当前已经确认的行程文本 | 确认后整体写入或替换 | 是，代表当前有效方案 |
-| `GraphState` | 保存当前运行的路由、ReAct 消息、处理后 Tool 结果和中断信息 | 随图运行更新 | 否，只是工作流状态 |
+| `GraphState` | 保存当前运行的 Task 计划、ReAct 消息、处理后 Tool 结果和中断信息 | 随图运行更新 | 否，只是工作流状态 |
 
 ### 6.1 Conversation
 
@@ -171,7 +195,12 @@ ReAct 循环必须限制最大步数、可用 Tool 范围和外部调用超时�
 - 不保存内部 Thought、完整 Tool 调用轨迹或供应商原始响应；
 - 不把完整 `CurrentItinerary` 重复追加为普通 AssistantMessage。
 
-Graph 启动时不把完整历史复制进 GraphState。当前 Context Builder 固定加载同一旅行中、当前消息之前的最近 8 条 Conversation；更早记录暂不提供给模型。历史摘要、动态压缩和 Conversation 召回 Tool 留作后续 TODO，底层 raw 历史始终完整保留。
+Graph 启动时不把完整历史复制进 GraphState。目标子图固定加载同一旅行中、当前消息之前的最近
+8 条原始 Conversation，并根据增强后的检索查询召回当前用户、当前 Trip 最相关的 3 条历史 Chunk。
+自动召回结果保存到独立的 `retrieved_history`，不与原始 `conversation_context` 混合；底层 raw
+历史始终完整保留。近期 Conversation 中已有的 `exchange_id` 会在数据库检索时排除，并在排除后
+先进行向量召回，再经过 `qwen3.7-text-rerank` 评分、阈值过滤和 Chunk Embedding 语义去重，最后
+执行 Top K 截断，避免低相关或重复历史占用上下文。历史摘要和动态压缩暂不实现。
 
 ### 6.2 TripContext
 
@@ -212,7 +241,9 @@ Graph 启动时不把完整历史复制进 GraphState。当前 Context Builder �
 
 GraphState 只服务于正在执行的图，可以包含：
 
-- 本次路由结果；
+- 本次 Orchestrator 计划、当前 Task、剩余 Task 和 TaskResult；
+- Reviewer 根据原始 TaskResult 整理的临时 `handoff_context`；
+- Task 执行计数和计划复核决策；
 - ReAct 循环使用的 messages；
 - 已处理和压缩后的 Tool 结果；
 - 当前候选输出；
@@ -227,12 +258,12 @@ GraphState 可以由 Checkpointer 保存，以支持 Agent 提问后的暂停与
 
 ## 7. Context Builder
 
-项目采用“根图最小上下文、子图按需加载”的原则。API 不在进入根图前一次性加载所有业务 Context，根图也不把所有长期数据分发给各模块。确定路由后，目标子图执行自己的 `load_context` 节点，并通过模块专属 Context Builder、Repository 和 PostgreSQL 读取所需信息。
+项目采用“根图最小上下文、子图按需加载”的原则。API 不在进入根图前一次性加载所有业务 Context，根图也不把所有长期数据分发给各模块。调度当前 Task 后，目标子图执行自己的 `load_context` 节点，并通过模块专属 Context Builder、Repository 和 PostgreSQL 读取所需信息。
 
 ```text
 API
 → 根图：user_id + trip_id + 当前请求 + 当前消息记录 ID
-→ 确定性路由
+→ Orchestrator 计划与确定性 Task 调度
 → 目标子图 load_context
 → 模块 Context Builder
 → Repository
@@ -247,28 +278,56 @@ Planning Agent 的模型上下文在调用前动态组装，持久化数据和 P
 | `TripContext` | 全量加载并注入模型上下文 |
 | `CurrentItinerary` | 存在时全量加载并注入模型上下文 |
 | `Conversation` | 只加载当前消息之前最近 8 条，以历史 HumanMessage / AIMessage 形式提供 |
+| `RetrievedHistory` | 根据增强后的专用查询召回 Top 3，以独立的相关历史分区提供 |
 
 ```text
 模块 System Prompt
 + 当前旅行最近 8 条 Conversation
++ 语义召回的相关历史
 + 完整 TripContext
 + CurrentItinerary（如果存在）
 + 当前 GraphState 中必要的 ReAct 消息
 + 当前步骤所需的已处理 Tool 结果
 ```
 
-根图在理解节点之前通过独立的 `load_routing_context` 节点读取当前消息之前最近 4 条
-Conversation。路由 Prompt 和实际模型消息都必须明确标注【历史消息】与【当前消息】：历史只用于
-消解指代和承接语义，理解 Agent 只为最后的当前消息选择路由。这不等于让根图加载完整
-PlanningContext；TripContext 和 CurrentItinerary 仍由目标子图按需加载。
+根图在 `create_plan` 之前通过独立的 `load_orchestrator_context` 节点读取当前消息之前最近 4 条
+Conversation。Orchestrator Prompt 和实际模型消息都必须明确标注【历史消息】与【当前消息】：
+历史只用于消解指代和承接语义，计划只服务于最后的当前消息。这不等于让根图加载完整模块
+Context；TripContext 和 CurrentItinerary 仍由当前 Task 的目标子图按需加载。
+
+根图给子图传递两份职责不同的文本：执行消息包含原始用户目标、当前 Task 和 Reviewer 整理的
+`handoff_context`；`retrieval_query` 则以当前检索目标为主，补充用户总体目标和已有结果，仅用于
+自动历史召回。根图正常路径始终提供专用查询；子图被单独调用时可回退使用当前执行消息。
+完整原始 TaskResult 不直接复制给下游 Agent，也不参与自动 RAG 查询。
+
+实际生成查询向量前，语义增强 Service 使用当前用户输入、当前 Task 目标、`retrieval_query` 和
+当前消息之前最近 4 条 Conversation，生成完整独立的增强查询；Embedding 只处理增强结果。Chunk
+提交也先使用当前 Exchange、上下文目标和最近 4 条历史生成增强 `retrieval_text`，不在 Chunk 中
+复制原始对话。正常结束使用 `orchestration_goal`，interrupt 使用当前 Task 目标。增强 Service
+复用当前聊天模型配置，但不作为 Agent、Tool 或 LangGraph 节点运行。
+
+初步向量召回与最终返回数量分离：Repository 默认取得 20 条候选，Reranker 对增强查询与候选
+`retrieval_text` 统一评分，Service 先过滤低分结果，再按分数从高到低做贪心语义去重，最后返回
+调用方要求的 Top K。Reranker 固定使用 `qwen3.7-text-rerank` 并复用现有模型 API Key；分数阈值、
+去重阈值和候选数通过环境变量调整，不写入 GraphState。
 
 未来如果引入其他模块，每个子图都在进入后加载自己的最小上下文。例如 Inspiration 不必加载完整 CurrentItinerary，Booking 只加载交易所需的已选方案和确认状态。各模块仍读取同一份权威业务数据；这里的 Scoped Context 是读取和投影策略，不意味着复制多份互相独立的业务状态。
 
-数据库连接池、Repository、模型客户端和其他运行时依赖通过构图参数、运行时 Context 或应用依赖注入提供，不能写入 RootState 或模块 State。
+数据库连接池、Repository、模型客户端、召回 Service 和其他运行时依赖通过构图参数、运行时
+Context 或应用依赖注入提供，不能写入 RootState 或模块 State。Planning、Explore、Research 和
+Helper 均可调用 `search_conversation_history` 搜索派生检索文本，并在需要精确原话时调用
+`read_conversation_exchanges`；两个 Tool 的用户和 Trip 作用域来自 `ToolRuntime.state`，模型
+不能自行指定。
 
-Conversation 的追加由 API 或应用服务统一负责：接受请求后保存用户可见的 user message，模块正常结束后保存最终用户可见的 assistant message。子图不得把 SystemMessage、ToolMessage、Tool Call 或内部轨迹写入长期 Conversation。
+Conversation 的追加由 API 或应用服务统一负责：接受请求后保存用户可见的 user message，
+Orchestrator 正常结束后保存最终用户可见的 assistant message。TaskSpec、TaskResult、子图调用用的
+内部 HumanMessage、SystemMessage、ToolMessage、Tool Call 和内部轨迹均不得写入长期
+Conversation，也不得单独生成 RAG Chunk。`handoff_context` 和 `retrieval_query` 同样只是当前
+Graph 运行的临时派生数据，不写入数据库。
 
-TODO：当 Conversation 规模真正影响上下文窗口时，再设计只服务于 Conversation 的按需历史召回；TripContext 和 CurrentItinerary 继续保持全量加载，不通过召回 Tool 获取。
+interrupt 恢复时沿用 checkpoint 中已有的 `retrieved_history`，不重新进入 `load_context`。后续
+只在真实需要时增加历史摘要；TripContext 和 CurrentItinerary 继续保持全量加载，
+不通过召回 Tool 获取。
 
 ## 8. 用户提问、暂停与取消
 
@@ -395,26 +454,21 @@ Checkpointer 中的数据不能替代业务信息持久化。开发测试可以�
 
 ## 12. 典型运行流程
 
-### 12.1 新旅行规划
+### 12.1 Orchestrator 执行旅行规划
 
 ```text
 用户提交请求
 → API 确认当前会话可接收输入
 → Conversation 追加用户原始消息
-→ 根图理解 Agent 输出 planning 路由
-→ 确定性路由进入 Planning 子图
-→ Planning 子图的 load_context 节点调用 PlanningContextBuilder
-→ Context Builder 通过 Repository 加载相关 Conversation、完整 TripContext 和 CurrentItinerary
-→ 构造 PlanningState 后进入 Planning Agent
-→ Agent 按需调用查询 Tools 或更新 TripContext
-→ 信息不足时由 Agent 主动提问并 interrupt
-→ 用户回答后 resume 同一 Planning 轨迹
-→ Agent 形成足以满足当前请求的候选方案
-→ Agent 单独调用 submit_candidate_itinerary
-→ 独立确认节点 interrupt 并只接受“是/否”
-→ 用户选择“是”后确定性节点写入 CurrentItinerary
-→ 用户选择“否”则把拒绝结果返回 Agent
-→ 后端分别返回 assistant_message 和 current_itinerary
+→ Orchestrator 根据当前目标和少量近期历史生成 1～5 个顺序 Task
+→ 程序取得当前 Task 并按受约束的 task_type 调度目标子图
+→ 目标子图自行加载所需 Context，并完成 ReAct、主动提问或其他模块流程
+→ 子图结束后返回 TaskResult
+→ Orchestrator 根据 TaskResult 继续、替换剩余计划或结束
+→ 如果进入 Planning 并形成候选方案，沿用 submit_candidate_itinerary 和 interrupt 确认
+→ 用户确认后由确定性节点写入 CurrentItinerary
+→ Orchestrator 综合本轮有效结果生成最终 assistant_message
+→ 后端分别返回 assistant_message、candidate_itinerary 和 current_itinerary 中适用的字段
 → 本轮结束
 ```
 
@@ -427,7 +481,7 @@ Planning Agent 正在运行
 → 已经开始或完成的业务副作用保持原状
 → 用户另行发送一条新消息，明确说明新的要求
 → 新消息追加到原 Conversation
-→ 从根图重新理解并路由
+→ 从根图重新生成 Task 计划并调度
 → LLM 从近期 Conversation 看到彼此独立的旧消息和新消息
 ```
 
@@ -435,7 +489,7 @@ Planning Agent 正在运行
 
 ```text
 用户询问当前酒店附近的某类设施
-→ 根图路由到 Planning
+→ Orchestrator 生成包含 Planning 的 Task
 → Agent 使用当前上下文调用 POI 查询 Tool
 → 返回查询结果
 → 如果问题不改变长期旅行事实，则不修改 TripContext
@@ -463,7 +517,7 @@ Planning Agent 正在运行
 
 后续设计或代码评审时，至少检查以下问题：
 
-1. 根图理解 Agent 是否仍然只负责路由？
+1. Orchestrator 是否仍然只负责任务计划、调度、复核和最终回复，而没有调用领域 Tool 或修改业务数据？
 2. 新能力应当是 Tool，还是确实有理由成为新的模块 Agent？
 3. 是否错误地把 GraphState 当成长期业务事实？
 4. 是否给 TripContext 增加了未经确认的固定字段体系？
@@ -473,3 +527,4 @@ Planning Agent 正在运行
 8. Tool 结果是否已经压缩和规范化后才进入模型上下文？
 9. 候选确认与 CurrentItinerary 写入是否仍由确定性节点控制？
 10. 交易类副作用是否仍由未来的确定性工作流控制？
+11. 内部 Task、TaskResult 和子图调用消息是否仍未写入 Conversation 或单独生成 RAG Chunk？

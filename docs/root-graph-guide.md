@@ -1,54 +1,69 @@
-# 根图、运行控制与 Planning 衔接说明
+# 根图 Orchestrator、运行控制与业务子图衔接说明
 
 > 本文是 `docs/architecture.md` 的专题补充。若两份文档出现冲突，以架构基线为准。
 
-## 1. 根图的唯一业务职责
+## 1. 根图的业务职责
 
-根图负责把一次新的用户请求交给正确的业务模块。它不负责完成业务，也不负责把旅行需求预先整理成一套固定字段。
+根图负责把一次新的用户请求拆成受约束的顺序 Task，依次交给正确的业务模块，并根据中间结果
+调整剩余计划。它不负责完成领域任务，也不负责把旅行需求预先整理成一套固定字段。
 
 当前结构为：
 
 ```mermaid
 flowchart LR
     INPUT["新用户请求"] --> LOAD["加载最近 4 条 Conversation"]
-    LOAD --> UNDERSTAND["理解 Agent"]
-    UNDERSTAND --> ROUTE["受约束的 route"]
-    ROUTE --> DECIDE{"确定性路由函数"}
+    LOAD --> UNDERSTAND["Orchestrator 生成初始计划"]
+    UNDERSTAND --> ROUTE["受约束的 TaskSpec"]
+    ROUTE --> DECIDE{"确定性 Task 调度"}
     DECIDE -->|planning| PLAN["Planning Agent"]
     DECIDE -->|explore| EXPLORE["Explore Agent"]
     DECIDE -->|research| RESEARCH["Research Agent"]
     DECIDE -->|helper| HELPER["Helper Agent\n默认兜底与能力范围说明"]
+    PLAN --> RESULT["TaskResult"]
+    EXPLORE --> RESULT
+    RESEARCH --> RESULT
+    HELPER --> RESULT
+    RESULT --> REVIEW["Orchestrator 复核剩余计划"]
+    REVIEW --> DECIDE
 ```
 
-理解 Agent 只输出路由。它不能调用旅行搜索 Tool、修改 TripContext、写入行程或直接生成旅行方案。
+Orchestrator 只生成计划、调度 Task、复核结果和整理最终回复。它不能调用旅行搜索 Tool、修改
+TripContext、写入行程或直接生成旅行方案。
 
-## 2. 为什么采用“Agent 理解 + 程序路由”
+## 2. 为什么采用“LLM 计划 + 程序调度”
 
 纯规则路由难以覆盖自然语言表达；完全开放的 Root Agent 又容易承担过多业务职责。
 
 当前设计把两者分开：
 
-- LLM 理解用户语义；
-- 结构化输出限制路由范围；
-- 普通路由函数把结果映射到已注册节点；
-- 不能明确归入前三个业务模式的请求统一交给 Helper 处理。
+- LLM 理解用户语义并生成一到五个顺序 Task；
+- 结构化输出限制 Task 类型和计划复核动作；
+- 普通调度函数把当前 Task 映射到已注册节点；
+- 每个 Task 后允许继续、替换剩余计划或结束；
+- 不能明确归入前三个业务模式的请求交给 Helper 处理。
 
 这样既保留自然语言理解能力，也避免让模型任意决定系统拓扑。
 根图不提前判断请求最终能否完成；Helper 根据自己的只读 Tool 能力回答、部分完成或拒绝。
 
-## 3. 根图输入与输出
+## 3. 根图输入、临时状态与输出
 
-根图输入只保留支持路由判断所需的信息：
+根图输入只保留支持任务规划所需的信息：
 
 - 最新用户输入；
 - 当前消息之前最近 4 条 Conversation；
 - `user_id`、`trip_id` 和用于限定历史截止位置的 `user_message_id`。
 
-理解 Agent 的 System Prompt 明确说明两种消息的边界。历史记录保留 user/assistant 角色并统一
-添加【历史消息】标签，最后一条用户输入单独添加【当前消息】标签。模型只能为当前消息选择路由，
+Orchestrator 的 System Prompt 明确说明两种消息的边界。历史记录保留 user/assistant 角色并统一
+添加【历史消息】标签，最后一条用户输入单独添加【当前消息】标签。模型只能为当前消息制定计划，
 历史消息仅用于理解指代、省略和上下文承接。
 
-根图输出是最小路由结果。Planning 所需的完整上下文由进入模块前的 Context Builder 组装，不让根图 State 承担所有模块数据。
+RootState 保存待执行 Task、当前 Task、已完成 TaskResult 和执行计数。根图不会预加载 TripContext
+或 CurrentItinerary 作为各子图上下文，也不保存子图 ReAct Messages；目标模块需要的完整上下文
+由各自 Context Builder 组装。子图返回的 `candidate_itinerary` / `current_itinerary` 会由 RootState
+携带，但只作为本轮 API 响应的独立输出字段。
+
+内部 TaskSpec、TaskResult 和子图调用消息只属于 GraphState，不写入 Conversation，也不单独生成
+RAG Chunk。详细契约见 `docs/travel_agent_orchestrator_task_design.md`。
 
 ## 4. Planning 的持续 ReAct
 
@@ -78,7 +93,7 @@ API 必须区分三种动作：
 ```text
 追加 Conversation
 → 从根图开始
-→ 理解并路由
+→ Orchestrator 计划并调度 Task
 ```
 
 ### 5.2 回答 Agent 的问题
@@ -91,7 +106,8 @@ Planning Agent 主动提问并处于等待状态时收到用户消息：
 → 恢复原 Planning 轨迹
 ```
 
-此时不重新经过根图，因为这条输入是对当前问题的回答。
+此时不重新生成计划，因为这条输入是对当前 Task 问题的回答；子图结束后继续回到 Orchestrator
+复核剩余计划。
 
 ### 5.3 取消后重新输入
 
@@ -153,11 +169,11 @@ API 不保存 `IDLE / RUNNING / WAITING_USER` 状态字段，也不建立对应�
 - 不统一提取完整旅行需求；
 - 不检查一组固定字段是否齐全；
 - 不承担 Planning 的上下文更新；
-- 不在模块之间自由 handoff；
+- 不允许子图之间直接 handoff；跨模块调用只能由受约束的 Orchestrator Task 调度；
 - 不直接执行业务 Tools；
 - 不处理运行中插话；
 - 不预建未来模块和空路由；
-- 不把交易审批交给理解 Agent。
+- 不把交易审批交给 Orchestrator。
 
 这些边界用于防止根图逐渐演变成难以测试的万能 Agent。
 
@@ -170,11 +186,15 @@ API 不保存 `IDLE / RUNNING / WAITING_USER` 状态字段，也不建立对应�
 | `TOURISM_AGENT_MODEL` | OpenAI 兼容模型名称 | `gpt-4.1-mini` |
 | `OPENAI_API_KEY` | 模型服务密钥 | 无 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址 | 不显式指定 |
+| `TOURISM_AGENT_RERANK_URL` | 千问 Rerank 专用地址；DashScope/百炼 Host 可留空推导 | 空 |
+| `RAG_RERANK_SCORE_THRESHOLD` | Rerank 相关性过滤阈值 | `0.0` |
+| `RAG_DEDUP_SIMILARITY_THRESHOLD` | Chunk 语义去重余弦阈值 | `0.98` |
+| `RAG_CANDIDATE_LIMIT` | pgvector 最小候选池 | `20` |
 | `RUN_LLM_INTEGRATION` | 是否运行真实模型测试 | `false` |
 
 本地配置可参考 `.env.example`。`.env` 已被 Git 忽略，不应提交真实密钥。
 
-普通测试不会调用真实模型。需要验证模型连接和结构化路由时，可临时执行：
+普通测试不会调用真实模型。需要验证模型连接和结构化任务计划时，可临时执行：
 
 ```powershell
 $env:RUN_LLM_INTEGRATION = "true"

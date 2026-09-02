@@ -1,10 +1,11 @@
-"""定义 API、理解 Agent 与根图之间共享的最小数据契约。"""
+"""定义 API、Orchestrator 根图与消息接口共享的最小数据契约。"""
 
-from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, StringConstraints
+
+from tourism_agent.models.orchestration import TaskType
 
 NormalizedText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -13,15 +14,6 @@ UserMessageText = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=4000),
 ]
-
-
-class RouteTarget(StrEnum):
-    """当前根图允许理解 Agent 选择的目标。"""
-
-    PLANNING = "planning"
-    EXPLORE = "explore"
-    RESEARCH = "research"
-    HELPER = "helper"
 
 
 class MessageRequest(BaseModel):
@@ -33,16 +25,10 @@ class MessageRequest(BaseModel):
     message: UserMessageText
 
 
-class IntentDecision(BaseModel):
-    """理解 Agent 返回给确定性路由函数的结构化结果。"""
-
-    route: RouteTarget
-
-
 class MessageResponse(BaseModel):
     """分别返回简短对话内容、候选方案和已确认行程。"""
 
-    route: RouteTarget
+    route: TaskType
     message: NormalizedText
     candidate_itinerary: NormalizedText | None = None
     current_itinerary: NormalizedText | None = None

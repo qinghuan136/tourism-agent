@@ -23,6 +23,8 @@ RESEARCH_QUERY_TOOL_NAMES = {
     "measure_travel_distance",
     "map_web_site",
     "crawl_web_site",
+    "search_conversation_history",
+    "read_conversation_exchanges",
 }
 MAX_PLAN_REVISIONS = 2
 logger = logging.getLogger(__name__)

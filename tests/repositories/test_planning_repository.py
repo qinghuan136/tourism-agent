@@ -1,6 +1,7 @@
 """验证 PlanningRepository 与真实 PostgreSQL 表的映射。"""
 
 import asyncio
+import hashlib
 import os
 from collections.abc import Awaitable
 from uuid import UUID, uuid4
@@ -183,6 +184,264 @@ def test_repository_upserts_current_itinerary() -> None:
             assert await repository.get_current_itinerary(trip_id) == "杭州四日确认方案"
         finally:
             await delete_scope(database, user_id)
+            await database.close()
+
+    run_async(scenario())
+
+
+def test_repository_atomically_links_exchange_and_saves_conversation_chunk() -> None:
+    """Chunk 入库时应同时把两条原始消息绑定到同一 Exchange。"""
+
+    async def scenario() -> None:
+        from tourism_agent.models.context import ConversationRole
+        from tourism_agent.models.rag import ConversationChunkDraft
+        from tourism_agent.repositories.planning import PlanningRepository
+
+        user_id = uuid4()
+        trip_id = uuid4()
+        exchange_id = uuid4()
+        retrieval_text = "用户：广州亲子游去哪？\n助手：可以考虑长隆。"
+        database = PostgresDatabase(DatabaseSettings())
+        await database.open()
+        try:
+            await seed_scope(database, user_id, trip_id)
+            repository = PlanningRepository(database)
+            user_message = await repository.append_conversation(
+                trip_id,
+                ConversationRole.USER,
+                "广州亲子游去哪？",
+            )
+            assistant_message = await repository.append_conversation(
+                trip_id,
+                ConversationRole.ASSISTANT,
+                "可以考虑长隆。",
+            )
+
+            await repository.save_conversation_chunk(
+                ConversationChunkDraft(
+                    trip_id=trip_id,
+                    exchange_id=exchange_id,
+                    user_message_id=user_message.id,
+                    assistant_message_id=assistant_message.id,
+                    retrieval_text=retrieval_text,
+                    retrieval_text_sha256=hashlib.sha256(
+                        retrieval_text.encode("utf-8")
+                    ).hexdigest(),
+                    source_token_count=21,
+                    retrieval_token_count=21,
+                    enhancement_model="none",
+                    enhancement_version=1,
+                    embedding_model="qwen3.7-text-embedding",
+                    embedding=[0.25] * 1024,
+                )
+            )
+
+            async with database.connection() as connection:
+                message_cursor = await connection.execute(
+                    """
+                    SELECT id, exchange_id
+                    FROM tourism_agent.conversation_messages
+                    WHERE id IN (%s, %s)
+                    ORDER BY id
+                    """,
+                    (user_message.id, assistant_message.id),
+                )
+                chunk_cursor = await connection.execute(
+                    """
+                    SELECT exchange_id, user_message_id, assistant_message_id,
+                           retrieval_text, enhancement_model, embedding_model,
+                           vector_dims(embedding) AS dimensions
+                    FROM tourism_agent.conversation_rag_chunks
+                    WHERE trip_id = %s AND exchange_id = %s
+                    """,
+                    (trip_id, exchange_id),
+                )
+                message_rows = await message_cursor.fetchall()
+                chunk_row = await chunk_cursor.fetchone()
+
+            assert [row["exchange_id"] for row in message_rows] == [
+                exchange_id,
+                exchange_id,
+            ]
+            recent = await repository.get_recent_conversation(
+                trip_id,
+                before_message_id=assistant_message.id + 1,
+                limit=8,
+            )
+            assert [message.exchange_id for message in recent] == [
+                exchange_id,
+                exchange_id,
+            ]
+            assert chunk_row == {
+                "exchange_id": exchange_id,
+                "user_message_id": user_message.id,
+                "assistant_message_id": assistant_message.id,
+                "retrieval_text": retrieval_text,
+                "enhancement_model": "none",
+                "embedding_model": "qwen3.7-text-embedding",
+                "dimensions": 1024,
+            }
+        finally:
+            await delete_scope(database, user_id)
+            await database.close()
+
+    run_async(scenario())
+
+
+def test_conversation_retrieval_filters_user_and_trip_before_vector_ranking() -> None:
+    """更相似的跨作用域 Chunk 也不得进入搜索结果或原文读取结果。"""
+
+    async def scenario() -> None:
+        from tourism_agent.models.context import ConversationRole
+        from tourism_agent.models.rag import ConversationChunkDraft
+        from tourism_agent.repositories.planning import PlanningRepository
+
+        user_id = uuid4()
+        other_user_id = uuid4()
+        trip_id = uuid4()
+        same_user_other_trip_id = uuid4()
+        other_user_trip_id = uuid4()
+        database = PostgresDatabase(DatabaseSettings())
+        await database.open()
+
+        async def persist_exchange(
+            repository: PlanningRepository,
+            scope_trip_id: UUID,
+            exchange_id: UUID,
+            user_text: str,
+            assistant_text: str,
+            embedding: list[float],
+        ) -> None:
+            user_message = await repository.append_conversation(
+                scope_trip_id,
+                ConversationRole.USER,
+                user_text,
+            )
+            assistant_message = await repository.append_conversation(
+                scope_trip_id,
+                ConversationRole.ASSISTANT,
+                assistant_text,
+            )
+            retrieval_text = f"用户：{user_text}\n助手：{assistant_text}"
+            await repository.save_conversation_chunk(
+                ConversationChunkDraft(
+                    trip_id=scope_trip_id,
+                    exchange_id=exchange_id,
+                    user_message_id=user_message.id,
+                    assistant_message_id=assistant_message.id,
+                    retrieval_text=retrieval_text,
+                    retrieval_text_sha256=hashlib.sha256(
+                        retrieval_text.encode("utf-8")
+                    ).hexdigest(),
+                    source_token_count=10,
+                    retrieval_token_count=10,
+                    enhancement_model="none",
+                    enhancement_version=1,
+                    embedding_model="qwen3.7-text-embedding",
+                    embedding=embedding,
+                )
+            )
+
+        current_exchange_id = uuid4()
+        current_other_exchange_id = uuid4()
+        same_user_other_exchange_id = uuid4()
+        other_user_exchange_id = uuid4()
+        query_embedding = [1.0, 0.0] + [0.0] * 1022
+        try:
+            await seed_scope(database, user_id, trip_id)
+            async with database.connection() as connection:
+                await connection.execute(
+                    "INSERT INTO tourism_agent.trips (id, user_id) VALUES (%s, %s)",
+                    (same_user_other_trip_id, user_id),
+                )
+            await seed_scope(database, other_user_id, other_user_trip_id)
+            repository = PlanningRepository(database)
+
+            await persist_exchange(
+                repository,
+                trip_id,
+                current_exchange_id,
+                "本次预算5000元",
+                "已记录预算",
+                [0.8, 0.6] + [0.0] * 1022,
+            )
+            await persist_exchange(
+                repository,
+                trip_id,
+                current_other_exchange_id,
+                "喜欢海边",
+                "已记录偏好",
+                [0.0, 1.0] + [0.0] * 1022,
+            )
+            await persist_exchange(
+                repository,
+                same_user_other_trip_id,
+                same_user_other_exchange_id,
+                "其他旅行的预算",
+                "不属于当前Trip",
+                query_embedding,
+            )
+            await persist_exchange(
+                repository,
+                other_user_trip_id,
+                other_user_exchange_id,
+                "其他用户的预算",
+                "不属于当前用户",
+                query_embedding,
+            )
+
+            matches = await repository.search_conversation_chunks(
+                user_id,
+                trip_id,
+                query_embedding,
+                5,
+                [],
+            )
+            wrong_user_matches = await repository.search_conversation_chunks(
+                other_user_id,
+                trip_id,
+                query_embedding,
+                5,
+                [],
+            )
+            matches_after_exclusion = await repository.search_conversation_chunks(
+                user_id,
+                trip_id,
+                query_embedding,
+                1,
+                [current_exchange_id],
+            )
+            exchanges = await repository.get_conversation_exchanges(
+                user_id,
+                trip_id,
+                [
+                    current_exchange_id,
+                    same_user_other_exchange_id,
+                    other_user_exchange_id,
+                ],
+            )
+
+            assert [match.exchange_id for match in matches] == [
+                current_exchange_id,
+                current_other_exchange_id,
+            ]
+            assert matches[0].similarity == pytest.approx(0.8)
+            assert matches[1].similarity == pytest.approx(0.0)
+            assert [match.exchange_id for match in matches_after_exclusion] == [
+                current_other_exchange_id
+            ]
+            assert matches[0].created_at.tzinfo is not None
+            assert matches[1].created_at.tzinfo is not None
+            assert wrong_user_matches == []
+            assert [(item.exchange_id, item.user_message, item.assistant_message) for item in exchanges] == [
+                (current_exchange_id, "本次预算5000元", "已记录预算")
+            ]
+            assert exchanges[0].user_created_at.tzinfo is not None
+            assert exchanges[0].assistant_created_at.tzinfo is not None
+            assert exchanges[0].user_created_at <= exchanges[0].assistant_created_at
+        finally:
+            await delete_scope(database, user_id)
+            await delete_scope(database, other_user_id)
             await database.close()
 
     run_async(scenario())

@@ -20,6 +20,8 @@ EXPLORE_QUERY_TOOL_NAMES = {
     "web_search",
     "extract_web_content",
     "measure_travel_distance",
+    "search_conversation_history",
+    "read_conversation_exchanges",
 }
 logger = logging.getLogger(__name__)
 

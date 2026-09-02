@@ -10,6 +10,7 @@ MIGRATIONS = (
     "001_initial_planning.sql",
     "002_remove_user_contexts.sql",
     "003_add_idempotency_requests.sql",
+    "004_add_conversation_rag.sql",
 )
 
 

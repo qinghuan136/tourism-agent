@@ -1,454 +1,423 @@
 # Travel Agent Orchestrator-Task 架构设计
 
-## 1. 总体目标
+## 1. 目标与边界
 
-将原本只负责单次意图路由的 `IntentAgent` 升级为 **Orchestrator**。
+根图由 Orchestrator 根据一次用户请求生成顺序 Task 计划，并按需要调用多个业务子图。
+Orchestrator 负责理解目标、生成初始计划、调度子图、复核中间结果和整理最终回复，
+但不直接查询旅行信息，也不直接修改业务数据。
 
-Orchestrator 不直接完成具体旅行任务，而是负责：
-
-- 理解当前用户输入
-- 判断是否包含多个连续任务
-- 动态拆分并编排子图调用顺序
-- 为每个子图生成明确的 Task 输入
-- 读取上一 Task 的结果，提炼对下一 Task 有用的信息
-- 判断任务是否已经完成、是否需要继续执行下一 Task
-- 必要时根据中间结果重新规划后续任务
-
-整体流程：
+本设计采用：
 
 ```text
-User Input
-    ↓
-Orchestrator
-    ↓
-生成 Task 1
-    ↓
-Subgraph / Task Component
-    ↓
-TaskResult
-    ↓
-Orchestrator
-    ↓
-结合：
-- 原始用户输入
-- 已完成任务
-- 当前 TaskResult
-- 业务状态
-
-决定：
-- 是否结束
-- 是否请求用户补充
-- 下一 Task 是什么
-- 下一 Task 输入是什么
-    ↓
-Task 2
-    ↓
-...
-    ↓
-Finalize
+初始计划
+→ 顺序执行一个 Task
+→ 观察 TaskResult
+→ 保留、替换或终止剩余计划
+→ 继续执行或结束
 ```
 
----
+它是受约束的 `Plan → Execute → Observe → Replan`，不是生成计划后机械执行，也不是允许
+Orchestrator 无限制地自由调用模块。
 
-## 2. 子图定位
+当前阶段明确不实现：
 
-现有业务子图都视为 **Task Component**，彼此平级，例如：
+- 并行 Task 和通用 DAG；
+- Task 数据库和独立 Artifact Store；
+- Orchestrator 直接调用业务 Tools；
+- 向用户展示或确认内部执行计划；
+- 为内部 Task 单独持久化 Conversation 或 RAG Chunk；
+- RAG 语义增强模型和 `memory_summary`；
+- 新增业务子图或重构现有子图内部 ReAct 流程。
+
+## 2. 组件职责
+
+### 2.1 Orchestrator
+
+Orchestrator 只承担四项职责：
+
+1. 根据当前用户输入和少量近期 Conversation 生成初始计划；
+2. 为当前 Task 选择已注册的业务子图；
+3. 根据 TaskResult 复核用户目标是否完成，并调整尚未执行的 Task；
+4. 综合本轮有效结果生成最终对话回复。
+
+Orchestrator 使用受 Pydantic Schema 约束的模型输出。LLM 负责语义决策，程序负责校验任务数量、
+任务类型和实际图跳转。
+
+### 2.2 Task Component
+
+现有子图继续彼此平级，并作为 Task Component：
 
 ```text
-Root / Orchestrator
+Orchestrator
 ├── ExploreGraph
 ├── ResearchGraph
 ├── PlanningGraph
-├── PreTripGraph
-├── InTripGraph
-└── PostTripGraph
+└── HelperGraph
 ```
 
-每个子图只负责完成一个明确任务：
+- Explore：开放式发现候选地点、活动和旅行方向；
+- Research：围绕明确对象进行深入研究；
+- Planning：生成或修改旅行计划，并沿用候选行程确认流程；
+- Helper：处理简单问答、局部只读查询和无法归入其他模块的请求。
+
+子图之间不能直接调用，也不需要知道其他子图的存在。每个子图仍按自己的需要加载近期
+Conversation、相关历史、TripContext 和 CurrentItinerary。
+
+### 2.3 Tool
+
+Tool 仍是子图内部的原子能力。Orchestrator 不绑定 `web_search`、地点查询、天气查询、
+TripContext 写入或行程写入等 Tools。
+
+## 3. 总体运行流程
 
 ```text
-TaskInput
-    ↓
-Subgraph
-    ↓
-TaskResult
+START
+  ↓
+load_orchestrator_context
+  ↓
+create_plan
+  ↓
+prepare_next_task ←──────────────────────┐
+  ↓                                      │
+dispatch_task                            │
+  ├── explore                            │
+  ├── research                           │
+  ├── planning                           │
+  └── helper                             │
+         ↓                               │
+record_task_result                       │
+         ↓                               │
+review_plan                              │
+  ├── continue ──────────────────────────┤
+  ├── replace_remaining ─────────────────┘
+  └── finish
+         ↓
+finalize
+  ↓
+END
 ```
 
-子图之间不直接依赖、也不需要知道其他子图的存在。
+节点分工：
 
-例如：
+- `load_orchestrator_context`：只加载制定计划所需的少量近期 Conversation；
+- `create_plan`：通过结构化模型输出生成初始顺序计划；
+- `prepare_next_task`：由程序从待执行列表中取出下一个 Task；
+- `dispatch_task`：由程序根据 `task_type` 跳转到已注册子图；
+- 子图节点：执行当前 Task，并返回对 Orchestrator 有效的结果；
+- `record_task_result`：由程序记录结果并增加已执行数量；
+- `review_plan`：通过结构化模型输出决定继续、替换剩余计划或结束；
+- `finalize`：综合有效结果生成用户可见回复。
 
-- `ExploreGraph`：开放式探索、寻找候选目的地/POI
-- `ResearchGraph`：围绕指定地点或主题做深度调研
-- `PlanningGraph`：生成或修改旅行计划
+`dispatch_task` 使用确定性条件路由或 `Command`，不能让 LLM 返回任意 Python 节点名。
 
----
+## 4. 初始计划
 
-## 3. Orchestrator 的职责
-
-Orchestrator 同时承担三类职责。
-
-### 3.1 Planner
-
-根据用户请求决定需要执行哪些任务。
-
-例如：
-
-```text
-用户：
-“帮我找几个北京小众古建筑，
-挑两个合适的直接放进第二天行程。”
-
-↓
-
-可能的任务链：
-
-Explore
-→ Planning
-```
-
-任务链不要求一次性完全确定。
-
-Orchestrator 可以执行一个 Task 后，根据结果动态决定下一步，实现：
-
-```text
-Plan
-→ Act
-→ Observe
-→ Replan
-```
-
-例如：
-
-```text
-用户：
-“研究一下西贡，如果适合我就放进行程。”
-
-Research
-↓
-结果：不推荐
-↓
-Orchestrator 判断条件不成立
-↓
-不再调用 Planning
-```
-
----
-
-### 3.2 Router
-
-Orchestrator 根据当前目标选择需要调用的子图。
-
-允许的 Task 类型应由程序限制，例如：
+第一版只支持顺序任务：
 
 ```python
-TaskType = Literal[
-    "explore",
-    "research",
-    "planning",
-    "pre_trip",
-    "in_trip",
-    "post_trip",
-]
-```
+class TaskType(StrEnum):
+    EXPLORE = "explore"
+    RESEARCH = "research"
+    PLANNING = "planning"
+    HELPER = "helper"
 
-LLM 负责决策，但真正可执行的 Task 类型由系统约束。
 
----
-
-### 3.3 Context Manager
-
-Orchestrator 负责在 Task 之间进行**语义级上下文搬运**。
-
-原则不是：
-
-```text
-Task A 全量输出
-→ 原样复制
-→ Task B
-```
-
-而是：
-
-```text
-Task A Result
-↓
-Orchestrator 理解
-↓
-筛选与重组
-↓
-只保留 Task B 真正需要的信息
-↓
-生成 Task B Input
-```
-
-例如 Explore 返回：
-
-```text
-找到了智化寺、白塔寺、法源寺等候选。
-其中智化寺和法源寺最符合用户偏好的“小众、历史文化”特征。
-智化寺 POI ID 为 xxx，法源寺 POI ID 为 yyy。
-```
-
-Orchestrator 为 Planning 生成：
-
-```text
-目标：
-将 Explore 阶段筛选出的地点加入第二天行程。
-
-有效上下文：
-- 智化寺，POI ID=xxx
-- 法源寺，POI ID=yyy
-- 两者最符合用户“小众、历史文化”的偏好
-
-要求：
-合理安排到第二天，并尽量保持其他已确认计划不变。
-```
-
-搜索过程、被淘汰候选、无关网页内容等不继续传递。
-
----
-
-## 4. TaskInput
-
-每个 Task 应收到一个明确、独立的任务描述。
-
-第一版可以保持简单：
-
-```python
 class TaskSpec(BaseModel):
+    """Orchestrator 交给子图的单个任务。"""
+
+    task_id: str
     task_type: TaskType
     instruction: str
+
+
+class OrchestrationPlan(BaseModel):
+    """当前用户请求对应的初始执行计划。"""
+
+    goal: str
+    tasks: list[TaskSpec]
+    notes: str = ""
 ```
 
-其中：
+`tasks` 最少包含一个任务，最多包含五个任务。`instruction` 使用自然语言，可以引用前序 Task
+未来产生的结果，例如“调查 Explore 筛选出的最佳候选”，不要求初始计划提前知道具体地点。
 
-- `task_type`：决定调用哪个子图
-- `instruction`：Orchestrator 为该 Task 生成的自然语言任务输入
-
-如果后续确实需要，可以增加：
-
-```python
-task_id: str
-```
-
-用于记录执行链和调试。
-
----
+简单请求只生成一个 Task。例如天气查询或轻量问答可直接生成 Helper Task，不要求为了体现
+Orchestrator 而强行拆分任务。
 
 ## 5. TaskResult
 
-Task 不应只返回裸 `str`。
-
-至少需要：
+子图正常结束后，根图将其对话输出转换为统一 TaskResult：
 
 ```python
+class TaskStatus(StrEnum):
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
 class TaskResult(BaseModel):
-    status: Literal["success", "partial", "failed"]
+    """子图提供给 Orchestrator 的有效结果。"""
+
+    task_id: str
+    task_type: TaskType
+    status: TaskStatus
     result: str
 ```
 
-### status
+当前实现中，Planning、Explore、Research 和 Helper 四个子图正常到达结束节点时，根图都只记录
+`success`。`partial` 与 `failed` 仅为 TaskResult 契约预留，供后续在有明确状态传播设计时使用；当前
+Reviewer 不会收到这两种状态。未处理异常继续向上抛出，方便当前开发阶段调试，不伪装成 `failed`
+结果。
 
-用于让 Orchestrator 稳定判断任务执行状态：
+`result` 应包含下一步决策需要的有效信息，例如准确地点名、POI ID、时间、推荐结论、关键理由和
+仍未核实的内容；不得包含完整 ReAct Messages、原始网页正文或无关 Tool 返回。
 
-- `success`：任务正常完成
-- `partial`：得到部分结果，但存在缺失信息或部分外部能力失败
-- `failed`：任务无法完成
+Research 的完整报告和 Planning 的完整行程仍通过各模块原有输出管理。TaskResult 只承担本轮
+Orchestrator 决策需要的原始语义传递，不成为长期事实来源。所有已完成 TaskResult 在本轮 State
+中只追加保存；下游子图不直接消费这些原文，而由 Reviewer 整理 `handoff_context`。
 
-避免让 Orchestrator仅靠自然语言猜测任务是否成功。
+## 6. RootState
 
-### result
-
-`result` 使用自然语言描述 Task 的有效产出。
-
-它的主要消费者是 Orchestrator，因此应：
-
-- 包含下一步决策所需的重要信息
-- 尽量保留关键标识，如 POI ID、地点名、日期等
-- 避免输出无意义的执行过程
-- 避免塞入大量原始 Tool 返回内容
-
----
-
-## 6. 业务状态与 TaskResult 分离
-
-TaskResult 只负责**任务间临时语义传递**，不能承担长期业务状态存储。
-
-长期或权威业务事实仍由 DB / Shared State 管理，例如：
-
-```text
-UserProfile
-TripContext
-CurrentItinerary
-Conversation History
-用户明确确认的选择
-```
-
-因此：
-
-```text
-长期业务事实
-→ PostgreSQL / Shared State
-
-Task 中间结果
-→ TaskResult.result
-
-跨 Task 临时上下文
-→ Orchestrator 从 Result 中提炼并生成下一 TaskInput
-```
-
-例如 Planning 不应该依赖上一 Task 用自然语言复制完整 `CurrentItinerary`，而应该直接读取当前权威 itinerary。
-
----
-
-## 7. 用户补充与 interrupt
-
-Task 执行过程中如果发现必须由用户决定或补充信息，可以通过现有 interrupt 机制暂停。
-
-例如：
-
-```text
-Explore
-↓
-找到 5 个候选
-↓
-用户之前要求“先给我看看，我自己选”
-↓
-interrupt
-↓
-等待用户选择
-```
-
-恢复后仍继续当前 Task 或返回 Orchestrator。
-
-如果用户已经明确授权：
-
-```text
-“你帮我选好之后直接放进行程”
-```
-
-则无需 interrupt：
-
-```text
-Explore
-↓
-TaskResult
-↓
-Orchestrator
-↓
-Planning
-```
-
----
-
-## 8. 执行护栏
-
-为了防止 Orchestrator 无限调用子图，需要程序级限制。
-
-建议至少包含：
+RootState 保存当前请求的临时编排状态：
 
 ```python
-MAX_TASKS_PER_TURN = 5
+class RootState(TypedDict):
+    user_id: UUID
+    trip_id: UUID
+    user_message_id: int
+    user_input: str
+
+    routing_context: NotRequired[list[ConversationMessage]]
+    orchestration_goal: NotRequired[str]
+    pending_tasks: NotRequired[list[TaskSpec]]
+    current_task: NotRequired[TaskSpec | None]
+    task_results: NotRequired[list[TaskResult]]
+    latest_task_result: NotRequired[TaskResult | None]
+    handoff_context: NotRequired[str]
+    executed_task_count: NotRequired[int]
+
+    route: NotRequired[TaskType]
+    response: NotRequired[str]
+    candidate_itinerary: NotRequired[str | None]
+    current_itinerary: NotRequired[str | None]
 ```
 
-并记录：
+执行始终是顺序的，因此这些列表字段默认整体覆盖，不添加并行聚合 reducer。节点不能原地修改
+State，应返回明确的局部更新。
+
+`latest_task_result` 只在子图结束与 `record_task_result` 之间短暂存在。兼容现有 API 的 `route`
+字段继续保留，但其语义调整为“最近一次完成或当前中断的 Task 类型”，不再表示整轮请求只有一个
+路由。
+
+OrchestrationPlan、TaskSpec 和 TaskResult 只进入 GraphState/Checkpoint，不建立新的业务表。
+正常结束后沿用当前 Checkpoint 清理策略。
+
+## 7. Task 输入与上下文搬运
+
+Orchestrator 为子图生成的输入必须明确区分：
 
 ```text
-已执行 Task 数量
-已执行 Task 类型及结果摘要
+【原始用户目标】
+帮我看看广州塔附近有没有适合闲逛的地方，如果有就加入行程。
+
+【当前子任务】
+深入调查沙面是否适合当前用户，并核实交通、开放情况和游览价值。
+
+【Orchestrator整理的现有结果】
+Explore 找到三个候选，其中沙面最符合休闲散步需求……
 ```
 
-达到上限时：
+不能把全部 TaskResult 原样复制给每个后续子图。`review_plan` 应根据全部已完成结果和下一实际
+Task，把真正需要的地点名、标识、结论、约束、证据与待核实项整理为自由文本
+`handoff_context`。原始 TaskResult 继续完整保留，搜索过程和原始 Tool 输出不直接传递。
 
-- 直接 finalize 当前已有结果，或
-- 请求用户进一步确认
-
-同时禁止 Orchestrator 动态创造未注册的 Task 类型。
-
----
-
-## 9. 示例
-
-用户：
+根图另行构造自动历史召回查询：
 
 ```text
-“帮我找一下广州最近适合我的展览，
-挑一个最值得去的，放进周六行程。”
+【当前检索目标】
+{current_task.instruction}
+
+【用户总体目标】
+{user_input}
+
+【Orchestrator整理的现有结果】
+{handoff_context，可为空}
+```
+
+执行消息告诉 Agent 当前要做什么，`retrieval_query` 告诉 RAG 应寻找什么。根图调用四个子图时
+始终传入专用查询；为保留子图独立调试能力，直接调用子图且未提供该字段时，才回退到执行消息。
+
+这些内部构造的 HumanMessage 只用于调用子图，不是用户真实消息，不得追加到长期 Conversation。
+
+## 8. 计划复核
+
+每个 Task 完成后，由 `review_plan` 返回：
+
+```python
+class ReviewAction(StrEnum):
+    CONTINUE = "continue"
+    REPLACE_REMAINING = "replace_remaining"
+    FINISH = "finish"
+
+
+class PlanReviewDecision(BaseModel):
+    action: ReviewAction
+    reason: str
+    replacement_tasks: list[TaskSpec] = []
+    handoff_context: str = ""
+```
+
+- `continue`：保留当前剩余计划；
+- `replace_remaining`：只替换尚未执行的任务；
+- `finish`：用户目标已完成，或中间结果表明无需继续。
+
+`continue` 和 `replace_remaining` 必须提供非空交接上下文；`finish` 必须清空它。交接文本只能
+整理已经存在的结果，不能生成新事实，也不替代原始 TaskResult。
+
+已完成 TaskResult 只追加，Orchestrator 不能删除或改写。替换剩余计划后，程序仍校验合法任务
+类型和总执行上限。
+
+例如 Explore 没找到合适地点时，应直接 `finish`，不能继续执行无对象的 Research 和 Planning。
+Research 不推荐第一候选但仍有备选时，可以用新的 Research Task 替换剩余计划。
+
+## 9. 行程修改与用户确认
+
+内部执行计划不向用户展示，也不需要用户提前确认。但是“内部计划自动执行”不等于“行程修改
+自动生效”。
+
+即使原始请求包含“如果合适就加入行程”，Planning 仍应先形成包含具体地点和调整影响的候选
+行程，并沿用当前 `submit_candidate_itinerary → interrupt → 用户确认` 流程。用户确认后才写入
+CurrentItinerary。
+
+Planning 仍是唯一能够提交候选行程并触发行程写入的模块，Orchestrator 不能绕过该边界。
+
+## 10. interrupt、resume 与取消
+
+子图发生 interrupt 时，当前 Task、待执行计划和已完成结果已经存在于根图 Checkpoint：
+
+```text
+Orchestrator 正在执行 Research
+→ Research 调用 ask_user
+→ API 返回 interrupt
+→ 用户 resume
+→ 从 Research 中断点恢复
+→ Research 返回 TaskResult
+→ 根图继续 review_plan
+```
+
+resume 不重新执行 `create_plan`，也不重复已经完成的 Task。只有子图真正结束并返回 TaskResult 后，
+`executed_task_count` 才增加。
+
+取消继续沿用项目现有语义：停止后续执行并清理临时 Checkpoint，不回滚已经产生的数据库或外部
+副作用。
+
+## 11. Conversation 与 RAG 边界
+
+Orchestrator 不改变现有切块规则：
+
+```text
+一次外部用户输入
++ 一次对用户可见的 Agent 输出
+= 一个 Exchange / RAG Chunk
+```
+
+内部计划、TaskSpec、TaskResult、`handoff_context`、`retrieval_query`、子图调用消息、ReAct
+Messages 和 Tool 结果都不是 Conversation，不得单独生成 Chunk。
+
+一次请求内部即使依次执行 Explore、Research 和 Planning，正常结束时仍只保存原始 UserMessage
+和 Orchestrator 最终 AssistantMessage。发生 interrupt 时，继续按现有规则把“当前外部输入 +
+对用户可见的 interrupt 问题”作为一个 Exchange；resume 输入与下一次可见输出形成下一个
+Exchange。
+
+当前尚未实现语义增强，因此第一版要求 `finalize` 回复至少简要包含：
+
+- 本轮完成了什么；
+- 最终选择或结论；
+- 最关键的选择理由；
+- 是否修改了行程。
+
+未来引入语义增强时，可以在 finalize 阶段生成不写入 Conversation 的 `memory_summary`，把原始
+用户消息、最终回复和已确认的有效任务结论共同交给增强模型，生成
+`conversation_rag_chunks.retrieval_text`。精确原文仍通过 Exchange 关联的原始 Conversation
+读取。不得把被淘汰候选、原始 Tool 内容和未经确认的网页结论写入长期检索文本。
+
+## 12. 最终响应
+
+`finalize` 使用独立系统 Prompt，综合原始目标和 TaskResult 生成用户可见回复。它不得重复输出
+完整 CurrentItinerary；完整行程继续由 API 的 `current_itinerary` 字段独立返回。Planning 处于
+候选确认 interrupt 时，API 继续独立返回 `candidate_itinerary`。
+
+示例：
+
+```json
+{
+  "message": "我筛选并调研了沙面；在你确认后，已经将其安排到第二天下午。",
+  "current_itinerary": "……完整行程……"
+}
+```
+
+## 13. 执行护栏
+
+第一版只保留必要护栏：
+
+- 每次请求最多完成五个 Task；
+- 每次只执行一个 Task；
+- Task 类型只能来自 `TaskType`；
+- Orchestrator 不绑定业务 Tool；
+- 达到任务上限后基于已完成的 TaskResult 进入 finalize 并停止执行；
+- 子图异常暂时向上抛出，方便调试；
+- interrupt/resume 不重复计数；
+- 不增加通用重试、补偿、并行依赖和任务持久化框架。
+
+需要记录的核心日志包括：初始计划、当前 Task、TaskResult、复核决策、剩余 Task 和最终执行数量。
+
+## 14. 典型示例
+
+用户请求：
+
+```text
+帮我看看广州塔附近有没有适合闲逛的地方，如果有就加入我的行程。
 ```
 
 执行过程：
 
 ```text
-User Input
-    ↓
-Orchestrator
-    ↓
-Task 1: Explore
-instruction:
-“寻找广州近期适合用户偏好的展览，
-并筛选最值得关注的候选。”
-    ↓
-ExploreGraph
-    ↓
-TaskResult
-status = success
-result =
-“找到三个较合适的展览，其中 A 最符合用户偏好……”
-    ↓
-Orchestrator
-    ↓
-发现用户目标尚未完成：
-还需要修改行程
-    ↓
-Task 2: Planning
-instruction:
-“根据 Explore 结果，
-将最匹配的展览 A 合理安排进周六现有行程，
-尽量不破坏已确认安排。”
-    ↓
-PlanningGraph
-    ↓
-TaskResult
-    ↓
-Orchestrator
-    ↓
-目标完成
-    ↓
-Finalize
+create_plan
+  1. Explore：寻找并筛选候选
+  2. Research：深入核实最佳候选
+  3. Planning：把确认合适的地点加入行程
+
+Explore
+  → 找到沙面、二沙岛、海心沙，建议优先调查沙面
+
+review_plan
+  → 把 Research instruction 改写为“深入调查沙面……”
+
+Research
+  → 沙面适合休闲散步，交通与现有路线兼容，建议加入
+
+review_plan
+  → 把 Planning instruction 改写为“将沙面合理加入第二天下午……”
+
+Planning
+  → 生成候选行程
+  → interrupt 等待用户确认
+  → 确认后写入 CurrentItinerary
+
+review_plan
+  → 用户目标已经完成
+
+finalize
+  → 返回简短说明，API 独立返回完整 CurrentItinerary
 ```
 
----
-
-## 10. 当前架构原则
-
-最终保持以下边界：
+最终边界保持：
 
 ```text
-Orchestrator
-= Planner + Router + Context Manager
-
-Subgraph
-= Task Component
-
-Tool
-= 原子能力
+Orchestrator = Planner + Router + Context Manager + Finalizer
+Subgraph     = Task Component
+Tool         = 原子能力
+DB           = 长期权威事实
+GraphState   = 当前请求的临时编排状态
+Conversation = 用户可见、只追加的外部对话
 ```
-
-数据边界：
-
-```text
-DB / Shared State
-→ 长期、权威业务事实
-
-TaskResult
-→ 当前 Task 的结构化状态 + 自然语言结果
-
-Orchestrator
-→ 根据用户目标和 TaskResult
-  动态裁剪、重组下一 Task 的输入
-```
-
-当前阶段优先保持实现简单，不引入 Artifact Store、复杂 DAG、Schema Registry 等基础设施。
-
-如果后续实际出现字符串结果不稳定、关键 ID 丢失、Task 结果过长、并行任务依赖复杂等问题，再针对真实问题升级结构化 Artifact 或更复杂的工作流机制。

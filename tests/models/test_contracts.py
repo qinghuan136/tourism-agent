@@ -1,4 +1,4 @@
-"""验证消息接口、理解 Agent 与根图共享的输入输出契约。"""
+"""验证消息接口、Orchestrator 根图共享的输入输出契约。"""
 
 from uuid import UUID
 
@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from tourism_agent.models import contracts
 from tourism_agent.models.contracts import MessageRequest
+from tourism_agent.models.orchestration import TaskType
 
 USER_ID = UUID("55555555-5555-5555-5555-555555555555")
 TRIP_ID = UUID("66666666-6666-6666-6666-666666666666")
@@ -79,26 +80,6 @@ def test_message_request_requires_frontend_idempotency_id() -> None:
         MessageRequest(user_id=USER_ID, trip_id=TRIP_ID, message="规划杭州旅行")
 
 
-@pytest.mark.parametrize(
-    "route",
-    ["planning", "explore", "research", "helper"],
-)
-def test_intent_decision_accepts_only_registered_routes(route: str) -> None:
-    """理解 Agent 只能选择根图中已经注册的路由。"""
-    decision = contracts.IntentDecision(route=route)
-
-    assert decision.model_dump(mode="json") == {"route": route}
-
-    with pytest.raises(ValidationError):
-        contracts.IntentDecision(route="unknown")
-
-
-def test_intent_decision_rejects_removed_unsupported_route() -> None:
-    """能力不足是 Helper 的处理结果，不应继续伪装成根图业务模块。"""
-    with pytest.raises(ValidationError):
-        contracts.IntentDecision(route="unsupported")
-
-
 def test_message_response_serializes_public_api_contract() -> None:
     """API 应分别序列化简短消息、候选方案和已确认行程。"""
     response = contracts.MessageResponse(
@@ -108,9 +89,17 @@ def test_message_response_serializes_public_api_contract() -> None:
         current_itinerary="  杭州两日已确认方案  ",
     )
 
+    assert response.route is TaskType.PLANNING
     assert response.model_dump(mode="json") == {
         "route": "planning",
         "message": "已进入 Fake Planning 子图",
         "candidate_itinerary": "杭州三日候选方案",
         "current_itinerary": "杭州两日已确认方案",
     }
+
+
+def test_root_graph_remains_importable() -> None:
+    """根图应保持为 API 可调用的工作流入口。"""
+    from tourism_agent.graph.root import build_root_graph
+
+    assert callable(build_root_graph)

@@ -7,6 +7,7 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
 from tourism_agent.models.context import ConversationMessage
+from tourism_agent.models.rag import ConversationChunkMatch
 
 
 class ExploreState(TypedDict):
@@ -15,8 +16,12 @@ class ExploreState(TypedDict):
     user_id: UUID
     trip_id: UUID
     user_message_id: int
+    retrieval_query: NotRequired[str]
+    retrieval_user_input: NotRequired[str]
+    retrieval_task_goal: NotRequired[str]
     messages: Annotated[list[AnyMessage], add_messages]
     conversation_context: NotRequired[list[ConversationMessage]]
+    retrieved_history: NotRequired[list[ConversationChunkMatch]]
     trip_context: NotRequired[dict[str, Any]]
     current_itinerary: NotRequired[str | None]
     assistant_message: NotRequired[str]

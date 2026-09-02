@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from tourism_agent.graph.nodes.intent import create_intent_node
-from tourism_agent.models.contracts import RouteTarget
+from tourism_agent.graph.nodes.orchestrator import create_plan_node
+from tourism_agent.models.orchestration import TaskType
 from tourism_agent.providers.model import ModelSettings, create_chat_model
 
 settings = ModelSettings()
@@ -16,10 +16,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_real_model_returns_structured_planning_route() -> None:
-    """用一次最小调用验证模型连接和根图结构化路由能力。"""
-    intent_node = create_intent_node(create_chat_model(settings))
+def test_real_model_returns_structured_orchestration_plan() -> None:
+    """用一次最小调用验证模型连接和根图结构化任务计划能力。"""
+    node = create_plan_node(create_chat_model(settings))
 
-    result = asyncio.run(intent_node({"user_input": "帮我规划北京三日游"}))
+    result = asyncio.run(node({"user_input": "帮我规划北京三日游"}))
 
-    assert result == {"route": RouteTarget.PLANNING}
+    assert result["pending_tasks"]
+    assert result["pending_tasks"][0].task_type is TaskType.PLANNING

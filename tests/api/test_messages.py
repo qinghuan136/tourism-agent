@@ -1,6 +1,7 @@
-"""验证消息接口的路由、恢复、确认和幂等行为。"""
+"""验证消息接口的 Task 调度、恢复、确认和幂等行为。"""
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 from importlib import import_module
@@ -12,9 +13,15 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableLambda
 
+from tourism_agent.graph.subgraphs.research.state import ResearchPlan
 from tourism_agent.models.context import ConversationMessage, ConversationRole
-from tourism_agent.models.contracts import IntentDecision
 from tourism_agent.models.idempotency import IdempotencyRecord, IdempotencyStatus
+from tourism_agent.models.orchestration import (
+    OrchestrationPlan,
+    PlanReviewDecision,
+    TaskSpec,
+    TaskType,
+)
 from tourism_agent.repositories.idempotency import IdempotencyClaim
 
 USER_ID = UUID("77777777-7777-7777-7777-777777777777")
@@ -111,12 +118,16 @@ def override_api_dependencies(
     graph: Any,
     repository: "ApiFakeRepository",
     idempotency_repository: ApiFakeIdempotencyRepository,
+    chunk_service: "ApiFakeConversationChunkService | None" = None,
 ) -> None:
     """让消息 API 测试只替换外部数据库与模型边界。"""
     api.app.dependency_overrides[api.get_root_graph] = lambda: graph
     api.app.dependency_overrides[api.get_planning_repository] = lambda: repository
     api.app.dependency_overrides[api.get_idempotency_repository] = (
         lambda: idempotency_repository
+    )
+    api.app.dependency_overrides[api.get_conversation_chunk_service] = (
+        lambda: chunk_service or ApiFakeConversationChunkService()
     )
 
 
@@ -187,32 +198,123 @@ class AssistantWriteFailingRepository(ApiFakeRepository):
         return await super().append_conversation(trip_id, role, content)
 
 
-class SemanticFakeModel:
-    """同时模拟根图路由和 Planning 最终回答，避免依赖外部 LLM。"""
+class ApiFakeConversationChunkService:
+    """记录 API 提交的一问一答 Exchange。"""
 
-    def with_structured_output(self, schema: type[IntentDecision]) -> RunnableLambda:
+    def __init__(self, *, should_fail: bool = False) -> None:
+        self.should_fail = should_fail
+        self.submissions: list[dict[str, object]] = []
+
+    async def submit(self, **submission: object) -> None:
+        if self.should_fail:
+            raise RuntimeError("模拟 Chunk 提交失败")
+        self.submissions.append(submission)
+
+
+class SemanticFakeModel:
+    """模拟 Orchestrator 和各子图回答，避免依赖外部 LLM。"""
+
+    def with_structured_output(self, schema: type[Any]) -> RunnableLambda:
         def decide(messages: list[BaseMessage]) -> Any:
             user_input = str(messages[-1].content)
             if "规划" in user_input:
-                route = "planning"
+                task_type = TaskType.PLANNING
             elif "灵感" in user_input:
-                route = "explore"
+                task_type = TaskType.EXPLORE
+            elif "调研" in user_input:
+                task_type = TaskType.RESEARCH
             else:
-                route = "helper"
-            return schema(route=route)
+                task_type = TaskType.HELPER
+            if schema is OrchestrationPlan:
+                return schema(
+                    goal="完成当前测试请求",
+                    tasks=[
+                        TaskSpec(
+                            task_id="task_1",
+                            task_type=task_type,
+                            instruction="完成当前旅行规划请求",
+                        )
+                    ],
+                )
+            if schema is PlanReviewDecision:
+                return schema(action="finish", reason="任务已经完成")
+            if schema is ResearchPlan:
+                return schema(
+                    goal="调研当前旅行对象",
+                    tasks=["确认开放时间", "核实预约要求"],
+                    source_strategy=["优先核对官方信息"],
+                    success_criteria=["给出可执行结论"],
+                    notes="",
+                )
+            raise AssertionError(f"不支持的结构化 Schema：{schema}")
 
         return RunnableLambda(decide)
+
+    def with_config(self, **_kwargs: object) -> RunnableLambda:
+        if "research" in _kwargs.get("tags", []):
+            def synthesize_research(messages: list[BaseMessage]) -> AIMessage:
+                current_message = next(
+                    str(message.content)
+                    for message in reversed(messages)
+                    if message.type == "human"
+                )
+                current = current_message.split("【原始用户目标】\n", maxsplit=1)[
+                    -1
+                ].split("\n\n", maxsplit=1)[0]
+                return AIMessage(content=f"Research Agent 已处理：{current}")
+
+            return RunnableLambda(synthesize_research)
+
+        def finalize(messages: list[BaseMessage]) -> AIMessage:
+            context = json.loads(str(messages[-1].content).split("\n", maxsplit=1)[1])
+            return AIMessage(content=context["task_results"][-1]["result"])
+
+        return RunnableLambda(finalize)
 
     def bind_tools(self, _tools: list[object]) -> RunnableLambda:
         def respond(messages: list[BaseMessage]) -> AIMessage:
             user_input = str(messages[-1].content)
-            if user_input.startswith("【当前消息】"):
-                current = user_input.split("\n", maxsplit=1)[-1]
-                module = "Explore" if "灵感" in current else "Helper"
+            if "【原始用户目标】" in user_input:
+                current = user_input.split("【原始用户目标】\n", maxsplit=1)[-1].split(
+                    "\n\n", maxsplit=1
+                )[0]
+                if "规划" in current:
+                    module = "Planning"
+                elif "灵感" in current:
+                    module = "Explore"
+                elif "调研" in current:
+                    module = "Research"
+                else:
+                    module = "Helper"
                 return AIMessage(content=f"{module} Agent 已处理：{current}")
             return AIMessage(content=f"Planning Agent 已处理：{user_input}")
 
         return RunnableLambda(respond)
+
+
+class MultiTaskSemanticFakeModel(SemanticFakeModel):
+    """为 API 边界测试返回两个内部 Task。"""
+
+    def with_structured_output(self, schema: type[Any]) -> RunnableLambda:
+        if schema is OrchestrationPlan:
+            return RunnableLambda(
+                lambda _messages: schema(
+                    goal="完成广州塔附近地点调研并加入行程",
+                    tasks=[
+                        TaskSpec(
+                            task_id="task_1",
+                            task_type=TaskType.EXPLORE,
+                            instruction="寻找广州塔附近适合闲逛的地点",
+                        ),
+                        TaskSpec(
+                            task_id="task_2",
+                            task_type=TaskType.PLANNING,
+                            instruction="将调研结果加入行程",
+                        ),
+                    ],
+                )
+            )
+        return super().with_structured_output(schema)
 
 
 class QuestionAskingFakeModel(SemanticFakeModel):
@@ -328,6 +430,15 @@ class MixedThenSequentialCandidateFakeModel(SemanticFakeModel):
             },
         ),
         (
+            "请调研故宫开放安排",
+            {
+                "route": "research",
+                "message": "Research Agent 已处理：请调研故宫开放安排",
+                "candidate_itinerary": None,
+                "current_itinerary": None,
+            },
+        ),
+        (
             "帮我写一段排序代码",
             {
                 "route": "helper",
@@ -343,7 +454,7 @@ def test_message_endpoint_routes_request_to_expected_subgraph(
     expected: dict[str, str | None],
     caplog,
 ) -> None:
-    """消息接口必须按照理解结果进入对应子图，而不是由 API 自行分支。"""
+    """消息接口必须按 Orchestrator Task 计划经确定性调度进入对应子图。"""
     api = import_module("tourism_agent.api")
     root_graph = import_module("tourism_agent.graph.root")
     repository = ApiFakeRepository()
@@ -370,6 +481,88 @@ def test_message_endpoint_routes_request_to_expected_subgraph(
     assert repository.messages[1].content == expected["message"]
     assert "API收到消息" in caplog.text
     assert "API消息处理完成" in caplog.text
+    assert f"最近Task={expected['route']}" in caplog.text
+
+
+def test_message_endpoint_submits_one_chunk_for_user_visible_exchange() -> None:
+    """成功请求应使用幂等 ID 和已落库的两条消息提交一个 Chunk。"""
+    api = import_module("tourism_agent.api")
+    root_graph = import_module("tourism_agent.graph.root")
+    repository = ApiFakeRepository()
+    idempotency_repository = ApiFakeIdempotencyRepository()
+    chunk_service = ApiFakeConversationChunkService()
+    graph = root_graph.build_root_graph(SemanticFakeModel(), repository)
+    override_api_dependencies(
+        api,
+        graph,
+        repository,
+        idempotency_repository,
+        chunk_service,
+    )
+
+    try:
+        response = TestClient(api.app).post(
+            "/messages",
+            json=message_payload("帮我规划北京三日游"),
+        )
+    finally:
+        api.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert len(chunk_service.submissions) == 1
+    submission = chunk_service.submissions[0]
+    assert submission["trip_id"] == TRIP_ID
+    assert submission["exchange_id"] == IDEMPOTENCY_ID_1
+    assert submission["user_message"] == repository.messages[0]
+    assert submission["assistant_message"] == repository.messages[1]
+    assert submission["context_goal"] == "完成当前测试请求"
+    assert submission["recent_conversation"] == []
+
+
+def test_multi_task_request_persists_only_external_exchange() -> None:
+    """多个内部 Task 只能形成一组用户可见的 Conversation Exchange。"""
+    api = import_module("tourism_agent.api")
+    root_graph = import_module("tourism_agent.graph.root")
+    repository = ApiFakeRepository()
+    idempotency_repository = ApiFakeIdempotencyRepository()
+    chunk_service = ApiFakeConversationChunkService()
+    graph = root_graph.build_root_graph(MultiTaskSemanticFakeModel(), repository)
+    override_api_dependencies(
+        api,
+        graph,
+        repository,
+        idempotency_repository,
+        chunk_service,
+    )
+    payload = message_payload("寻找广州塔附近适合闲逛的地点，调研后加入行程")
+
+    try:
+        response = TestClient(api.app).post("/messages", json=payload)
+    finally:
+        api.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert [message.role for message in repository.messages] == [
+        ConversationRole.USER,
+        ConversationRole.ASSISTANT,
+    ]
+    assert repository.messages[0].content == payload["message"]
+    assert repository.messages[1].content == response.json()["message"]
+    assert len(chunk_service.submissions) == 1
+    for message in repository.messages:
+        for internal_marker in (
+            "【当前子任务】",
+            "【原始用户目标】",
+            "【前序任务有效结果】",
+            '"task_id"',
+            '"task_type"',
+            '"status"',
+            '"result"',
+        ):
+            assert internal_marker not in message.content
+    submission = chunk_service.submissions[0]
+    assert submission["user_message"] == repository.messages[0]
+    assert submission["assistant_message"] == repository.messages[1]
 
 
 def test_message_endpoint_rejects_trip_outside_current_user_scope() -> None:
@@ -427,13 +620,20 @@ def test_root_graph_config_leaves_headroom_for_helper_react_budget() -> None:
 
 
 def test_message_endpoint_resumes_pending_agent_question() -> None:
-    """待回答的 thread 收到消息时应恢复 interrupt，不重新运行理解节点。"""
+    """待回答的 thread 收到消息时应恢复 interrupt，不重新生成 Task 计划。"""
     api = import_module("tourism_agent.api")
     root_graph = import_module("tourism_agent.graph.root")
     repository = ApiFakeRepository()
     idempotency_repository = ApiFakeIdempotencyRepository()
+    chunk_service = ApiFakeConversationChunkService()
     graph = root_graph.build_root_graph(QuestionAskingFakeModel(), repository)
-    override_api_dependencies(api, graph, repository, idempotency_repository)
+    override_api_dependencies(
+        api,
+        graph,
+        repository,
+        idempotency_repository,
+        chunk_service,
+    )
 
     try:
         client = TestClient(api.app)
@@ -468,6 +668,57 @@ def test_message_endpoint_resumes_pending_agent_question() -> None:
         ConversationRole.USER,
         ConversationRole.ASSISTANT,
     ]
+    assert [submission["exchange_id"] for submission in chunk_service.submissions] == [
+        IDEMPOTENCY_ID_1,
+        IDEMPOTENCY_ID_2,
+    ]
+    assert [submission["user_message"].content for submission in chunk_service.submissions] == [
+        "帮我规划杭州旅行",
+        "5000元",
+    ]
+    assert [submission["context_goal"] for submission in chunk_service.submissions] == [
+        "完成当前旅行规划请求",
+        "完成当前测试请求",
+    ]
+    assert chunk_service.submissions[0]["recent_conversation"] == []
+    assert chunk_service.submissions[1]["recent_conversation"] == repository.messages[:2]
+    assert [
+        submission["assistant_message"].content
+        for submission in chunk_service.submissions
+    ] == [
+        "你的旅行预算是多少？",
+        "已收到预算：5000元",
+    ]
+
+
+def test_chunk_submission_failure_does_not_fail_user_response(caplog) -> None:
+    """RAG 派生数据失败只能记录日志，不能破坏核心对话响应。"""
+    api = import_module("tourism_agent.api")
+    root_graph = import_module("tourism_agent.graph.root")
+    repository = ApiFakeRepository()
+    idempotency_repository = ApiFakeIdempotencyRepository()
+    chunk_service = ApiFakeConversationChunkService(should_fail=True)
+    graph = root_graph.build_root_graph(SemanticFakeModel(), repository)
+    override_api_dependencies(
+        api,
+        graph,
+        repository,
+        idempotency_repository,
+        chunk_service,
+    )
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="tourism_agent.api"):
+            response = TestClient(api.app).post(
+                "/messages",
+                json=message_payload("帮我规划北京三日游"),
+            )
+    finally:
+        api.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Planning Agent 已处理：帮我规划北京三日游"
+    assert "Conversation Chunk提交失败" in caplog.text
 
 
 def test_cancel_pending_question_makes_next_message_start_from_root() -> None:

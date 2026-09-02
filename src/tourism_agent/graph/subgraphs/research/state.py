@@ -8,6 +8,7 @@ from langgraph.graph.message import add_messages
 from pydantic import AfterValidator, BaseModel, Field, StringConstraints
 
 from tourism_agent.models.context import ConversationMessage
+from tourism_agent.models.rag import ConversationChunkMatch
 
 
 def _validate_meaningful_text(value: str) -> str:
@@ -55,8 +56,12 @@ class ResearchState(TypedDict):
     user_id: UUID
     trip_id: UUID
     user_message_id: int
+    retrieval_query: NotRequired[str]
+    retrieval_user_input: NotRequired[str]
+    retrieval_task_goal: NotRequired[str]
     messages: Annotated[list[AnyMessage], add_messages]
     conversation_context: NotRequired[list[ConversationMessage]]
+    retrieved_history: NotRequired[list[ConversationChunkMatch]]
     trip_context: NotRequired[dict[str, Any]]
     current_itinerary: NotRequired[str | None]
     research_plan: NotRequired[ResearchPlan]

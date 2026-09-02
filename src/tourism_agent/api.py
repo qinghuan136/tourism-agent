@@ -5,15 +5,19 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from langchain_core.embeddings import Embeddings
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from tourism_agent.graph.root import build_root_graph
+from tourism_agent.graph.tools.conversation_history import (
+    create_conversation_history_tools,
+)
 from tourism_agent.graph.tools.travel_query import create_query_tools
 from tourism_agent.infrastructure.database import DatabaseSettings, PostgresDatabase
 from tourism_agent.infrastructure.logging_config import (
@@ -22,7 +26,7 @@ from tourism_agent.infrastructure.logging_config import (
     log_preview,
     shutdown_logging,
 )
-from tourism_agent.models.context import ConversationRole
+from tourism_agent.models.context import ConversationMessage, ConversationRole
 from tourism_agent.models.contracts import (
     CancelRunRequest,
     CancelRunResponse,
@@ -31,17 +35,29 @@ from tourism_agent.models.contracts import (
     MessageResponse,
 )
 from tourism_agent.models.idempotency import IdempotencyRecord, IdempotencyStatus
-from tourism_agent.providers.model import create_chat_model
+from tourism_agent.models.orchestration import TaskSpec
+from tourism_agent.providers.model import (
+    ModelSettings,
+    create_chat_model,
+    create_embedding_model,
+)
+from tourism_agent.providers.reranker import QwenTextReranker, create_qwen_reranker
 from tourism_agent.providers.travel import TravelToolSettings, open_travel_query_clients
 from tourism_agent.repositories.idempotency import IdempotencyRepository
 from tourism_agent.repositories.planning import PlanningRepository
+from tourism_agent.services.conversation_chunk import ConversationChunkService
+from tourism_agent.services.conversation_retrieval import (
+    ConversationRetrievalService,
+)
 from tourism_agent.services.run_control import (
     ThreadBusyError,
     ThreadRunCancelledError,
     ThreadRunCoordinator,
 )
+from tourism_agent.services.semantic_enhancement import SemanticEnhancementService
 
 ROOT_GRAPH_RECURSION_LIMIT = 50
+CHUNK_ENHANCEMENT_HISTORY_LIMIT = 4
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +79,53 @@ def get_idempotency_repository() -> IdempotencyRepository:
     return IdempotencyRepository(get_database())
 
 
+@lru_cache
+def get_embedding_model() -> Embeddings:
+    """复用 Chunk 提交与历史召回使用的 Embedding Provider。"""
+    return create_embedding_model()
+
+
+@lru_cache
+def get_semantic_enhancement_service() -> SemanticEnhancementService:
+    """使用当前聊天模型配置复用 RAG 语义增强能力。"""
+    settings = ModelSettings()
+    return SemanticEnhancementService(
+        create_chat_model(settings),
+        model_name=settings.model_name,
+    )
+
+
+@lru_cache
+def get_reranker() -> QwenTextReranker:
+    """复用应用级千问 Reranker 及其 HTTP 连接池。"""
+    return create_qwen_reranker(ModelSettings())
+
+
+@lru_cache
+def get_conversation_chunk_service() -> ConversationChunkService:
+    """复用 Chunk Service，并使用与聊天模型相同的兼容接口配置。"""
+    return ConversationChunkService(
+        get_planning_repository(),
+        get_embedding_model(),
+        get_semantic_enhancement_service(),
+    )
+
+
+@lru_cache
+def get_conversation_retrieval_service() -> ConversationRetrievalService:
+    """复用限定当前用户和 Trip 的 Conversation 召回 Service。"""
+    settings = ModelSettings()
+    return ConversationRetrievalService(
+        get_planning_repository(),
+        get_embedding_model(),
+        get_semantic_enhancement_service(),
+        get_reranker(),
+        candidate_limit=settings.rerank_candidate_limit,
+        score_threshold=settings.rerank_score_threshold,
+        dedup_similarity_threshold=settings.dedup_similarity_threshold,
+    )
+
+
 def get_root_graph(request: Request) -> CompiledStateGraph:
     """取得应用启动时组装的共享根图。"""
     return request.app.state.root_graph
@@ -80,9 +143,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging(LoggingSettings())
     logger.info("应用启动开始")
     database = get_database()
-    await database.open()
-    logger.info("PostgreSQL连接池已打开")
+    reranker = get_reranker()
     try:
+        await database.open()
+        logger.info("PostgreSQL连接池已打开")
         repository = get_planning_repository()
         settings = TravelToolSettings()
         logger.info("旅行查询配置加载完成")
@@ -93,15 +157,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 clients.web_search,
                 clients.routes,
             )
+            retrieval_service = get_conversation_retrieval_service()
+            history_tools = create_conversation_history_tools(retrieval_service)
+            shared_query_tools = [*public_query_tools, *history_tools]
             # 根图、MCP 会话与 HTTP 客户端均由单一启动协程创建并在进程内复用。
             _app.state.root_graph = build_root_graph(
                 create_chat_model(),
                 repository,
-                query_tools=public_query_tools,
+                query_tools=shared_query_tools,
+                retrieval_service=retrieval_service,
             )
             logger.info(
-                "根图创建完成 public_query_tools=%s",
-                [tool.name for tool in public_query_tools],
+                "根图创建完成 shared_query_tools=%s",
+                [tool.name for tool in shared_query_tools],
             )
             get_run_coordinator()
             logger.info("应用启动完成")
@@ -110,14 +178,24 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             finally:
                 del _app.state.root_graph
     finally:
-        get_run_coordinator.cache_clear()
-        get_idempotency_repository.cache_clear()
-        get_planning_repository.cache_clear()
-        await database.close()
-        logger.info("PostgreSQL连接池已关闭")
-        get_database.cache_clear()
-        logger.info("应用关闭完成")
-        shutdown_logging()
+        try:
+            await reranker.aclose()
+        finally:
+            get_run_coordinator.cache_clear()
+            get_conversation_retrieval_service.cache_clear()
+            get_reranker.cache_clear()
+            get_conversation_chunk_service.cache_clear()
+            get_semantic_enhancement_service.cache_clear()
+            get_embedding_model.cache_clear()
+            get_idempotency_repository.cache_clear()
+            get_planning_repository.cache_clear()
+            try:
+                await database.close()
+                logger.info("PostgreSQL连接池已关闭")
+            finally:
+                get_database.cache_clear()
+                logger.info("应用关闭完成")
+                shutdown_logging()
 
 
 app = FastAPI(title="Tourism Agent", lifespan=lifespan)
@@ -140,6 +218,10 @@ async def handle_message(
     idempotency_repository: Annotated[
         IdempotencyRepository,
         Depends(get_idempotency_repository),
+    ],
+    chunk_service: Annotated[
+        ConversationChunkService,
+        Depends(get_conversation_chunk_service),
     ],
     coordinator: Annotated[ThreadRunCoordinator, Depends(get_run_coordinator)],
 ) -> MessageResponse | Response:
@@ -173,9 +255,10 @@ async def handle_message(
     thread_id = str(request.trip_id)
     config = graph_config(thread_id)
     user_message_id = 0
+    persisted_user_message: ConversationMessage | None = None
 
     async def persist_user_input() -> None:
-        nonlocal user_message_id
+        nonlocal persisted_user_message, user_message_id
         snapshot = await graph.aget_state(config)
         if snapshot.interrupts:
             interrupt_value = snapshot.interrupts[0].value
@@ -197,6 +280,7 @@ async def handle_message(
             ConversationRole.USER,
             request.message,
         )
+        persisted_user_message = user_message
         user_message_id = user_message.id
         logger.info(
             "用户消息已写入Conversation trip_id=%s user_message_id=%s",
@@ -222,7 +306,7 @@ async def handle_message(
         result = await graph.ainvoke(graph_input, config)
         interrupted = bool(result.get("__interrupt__"))
         logger.info(
-            "根图运行返回 trip_id=%s route=%s interrupted=%s",
+            "根图运行返回 trip_id=%s 最近Task=%s interrupted=%s",
             request.trip_id,
             result.get("route"),
             interrupted,
@@ -230,7 +314,7 @@ async def handle_message(
         response_committed = False
         try:
             response_message = get_user_visible_message(result)
-            await repository.append_conversation(
+            assistant_message = await repository.append_conversation(
                 request.trip_id,
                 ConversationRole.ASSISTANT,
                 response_message,
@@ -241,6 +325,40 @@ async def handle_message(
                 request.trip_id,
                 log_preview(response_message),
             )
+            try:
+                recent_conversation = await repository.get_recent_conversation(
+                    request.trip_id,
+                    before_message_id=cast(
+                        ConversationMessage,
+                        persisted_user_message,
+                    ).id,
+                    limit=CHUNK_ENHANCEMENT_HISTORY_LIMIT,
+                )
+                context_goal = (
+                    cast(TaskSpec, result["current_task"]).instruction
+                    if interrupted
+                    else str(result["orchestration_goal"])
+                )
+                await chunk_service.submit(
+                    trip_id=request.trip_id,
+                    exchange_id=request.idempotency_id,
+                    user_message=cast(ConversationMessage, persisted_user_message),
+                    assistant_message=assistant_message,
+                    context_goal=context_goal,
+                    recent_conversation=recent_conversation,
+                )
+                logger.info(
+                    "Conversation Chunk提交完成 trip_id=%s exchange_id=%s",
+                    request.trip_id,
+                    request.idempotency_id,
+                )
+            except Exception:
+                # Chunk 是可重建派生数据，索引失败不能破坏已经生成的用户响应。
+                logger.exception(
+                    "Conversation Chunk提交失败 trip_id=%s exchange_id=%s",
+                    request.trip_id,
+                    request.idempotency_id,
+                )
         finally:
             # 用户未看到提问时不能保留可恢复的 interrupt，否则重试会被误当作回答。
             if interrupted and not response_committed:
@@ -263,7 +381,7 @@ async def handle_message(
             await graph.checkpointer.adelete_thread(thread_id)
             logger.info("正常运行结束，已清理checkpoint trip_id=%s", request.trip_id)
         logger.info(
-            "API消息处理完成 trip_id=%s route=%s has_candidate=%s has_current_itinerary=%s",
+            "API消息处理完成 trip_id=%s 最近Task=%s has_candidate=%s has_current_itinerary=%s",
             request.trip_id,
             response.route.value,
             response.candidate_itinerary is not None,

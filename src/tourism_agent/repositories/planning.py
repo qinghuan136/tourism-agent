@@ -1,5 +1,6 @@
 """封装 Planning 阶段使用的 PostgreSQL 业务查询。"""
 
+import json
 from typing import Any
 from uuid import UUID
 
@@ -7,6 +8,11 @@ from psycopg.types.json import Jsonb
 
 from tourism_agent.infrastructure.database import PostgresDatabase
 from tourism_agent.models.context import ConversationMessage, ConversationRole
+from tourism_agent.models.rag import (
+    ConversationChunkCandidate,
+    ConversationChunkDraft,
+    ConversationExchange,
+)
 
 
 class PlanningRepository:
@@ -61,9 +67,9 @@ class PlanningRepository:
         async with self._database.connection() as connection:
             cursor = await connection.execute(
                 """
-                SELECT id, role, content, created_at
+                SELECT id, role, content, created_at, exchange_id
                 FROM (
-                    SELECT id, role, content, created_at
+                    SELECT id, role, content, created_at, exchange_id
                     FROM tourism_agent.conversation_messages
                     WHERE trip_id = %s AND id < %s
                     ORDER BY id DESC
@@ -75,6 +81,151 @@ class PlanningRepository:
             )
             rows = await cursor.fetchall()
         return [ConversationMessage.model_validate(row) for row in rows]
+
+    async def save_conversation_chunk(self, chunk: ConversationChunkDraft) -> None:
+        """原子绑定 Exchange，并保存一问一答对应的向量 Chunk。"""
+        embedding_literal = json.dumps(chunk.embedding, separators=(",", ":"))
+        async with self._database.connection() as connection, connection.transaction():
+            await connection.execute(
+                """
+                UPDATE tourism_agent.conversation_messages
+                SET exchange_id = %s
+                WHERE trip_id = %s AND id IN (%s, %s)
+                """,
+                (
+                    chunk.exchange_id,
+                    chunk.trip_id,
+                    chunk.user_message_id,
+                    chunk.assistant_message_id,
+                ),
+            )
+            await connection.execute(
+                """
+                INSERT INTO tourism_agent.conversation_rag_chunks (
+                    trip_id,
+                    exchange_id,
+                    user_message_id,
+                    assistant_message_id,
+                    retrieval_text,
+                    retrieval_text_sha256,
+                    source_token_count,
+                    retrieval_token_count,
+                    enhancement_model,
+                    enhancement_version,
+                    embedding_model,
+                    embedding
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector
+                )
+                """,
+                (
+                    chunk.trip_id,
+                    chunk.exchange_id,
+                    chunk.user_message_id,
+                    chunk.assistant_message_id,
+                    chunk.retrieval_text,
+                    chunk.retrieval_text_sha256,
+                    chunk.source_token_count,
+                    chunk.retrieval_token_count,
+                    chunk.enhancement_model,
+                    chunk.enhancement_version,
+                    chunk.embedding_model,
+                    embedding_literal,
+                ),
+            )
+
+    async def search_conversation_chunks(
+        self,
+        user_id: UUID,
+        trip_id: UUID,
+        embedding: list[float],
+        limit: int,
+        exclude_exchange_ids: list[UUID],
+    ) -> list[ConversationChunkCandidate]:
+        """先限制用户和 Trip，再按余弦相似度精确排序 Chunk。"""
+        embedding_literal = json.dumps(embedding, separators=(",", ":"))
+        async with self._database.connection() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT chunk.exchange_id,
+                       chunk.retrieval_text,
+                       1 - (chunk.embedding <=> %s::vector) AS similarity,
+                       chunk.created_at,
+                       chunk.embedding::text AS embedding
+                FROM tourism_agent.conversation_rag_chunks AS chunk
+                JOIN tourism_agent.trips AS trip
+                  ON trip.id = chunk.trip_id
+                 AND trip.user_id = %s
+                 AND trip.archived_at IS NULL
+                WHERE chunk.trip_id = %s
+                  AND NOT (chunk.exchange_id = ANY(%s::uuid[]))
+                ORDER BY similarity DESC, chunk.id DESC
+                LIMIT %s
+                """,
+                (
+                    embedding_literal,
+                    user_id,
+                    trip_id,
+                    exclude_exchange_ids,
+                    limit,
+                ),
+            )
+            rows = await cursor.fetchall()
+        return [
+            ConversationChunkCandidate(
+                exchange_id=row["exchange_id"],
+                retrieval_text=row["retrieval_text"],
+                similarity=float(row["similarity"]),
+                created_at=row["created_at"],
+                embedding=json.loads(row["embedding"]),
+            )
+            for row in rows
+        ]
+
+    async def get_conversation_exchanges(
+        self,
+        user_id: UUID,
+        trip_id: UUID,
+        exchange_ids: list[UUID],
+    ) -> list[ConversationExchange]:
+        """在同一可信作用域内按 Exchange ID 读取原始双方消息。"""
+        async with self._database.connection() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT chunk.exchange_id,
+                       user_message.content AS user_message,
+                       assistant_message.content AS assistant_message,
+                       user_message.created_at AS user_created_at,
+                       assistant_message.created_at AS assistant_created_at
+                FROM tourism_agent.conversation_rag_chunks AS chunk
+                JOIN tourism_agent.trips AS trip
+                  ON trip.id = chunk.trip_id
+                 AND trip.user_id = %s
+                 AND trip.archived_at IS NULL
+                JOIN tourism_agent.conversation_messages AS user_message
+                  ON user_message.trip_id = chunk.trip_id
+                 AND user_message.id = chunk.user_message_id
+                JOIN tourism_agent.conversation_messages AS assistant_message
+                  ON assistant_message.trip_id = chunk.trip_id
+                 AND assistant_message.id = chunk.assistant_message_id
+                WHERE chunk.trip_id = %s
+                  AND chunk.exchange_id = ANY(%s::uuid[])
+                ORDER BY chunk.id ASC
+                """,
+                (user_id, trip_id, exchange_ids),
+            )
+            rows = await cursor.fetchall()
+        return [
+            ConversationExchange(
+                exchange_id=row["exchange_id"],
+                user_message=row["user_message"],
+                assistant_message=row["assistant_message"],
+                user_created_at=row["user_created_at"],
+                assistant_created_at=row["assistant_created_at"],
+            )
+            for row in rows
+        ]
 
     async def get_trip_context(self, trip_id: UUID) -> dict[str, Any]:
         """读取当前旅行上下文；尚未建立时返回空对象。"""
