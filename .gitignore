@@ -16,8 +16,11 @@ htmlcov/
 pytest-cache-files-*/
 
 # 构建产物
+node_modules/
+.pnpm-store/
 build/
 dist/
+coverage/
 *.egg-info/
 
 # 本地临时目录与 worktree

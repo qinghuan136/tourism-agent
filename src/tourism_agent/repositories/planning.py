@@ -82,6 +82,46 @@ class PlanningRepository:
             rows = await cursor.fetchall()
         return [ConversationMessage.model_validate(row) for row in rows]
 
+    async def get_conversation_page(
+        self,
+        trip_id: UUID,
+        *,
+        before_message_id: int | None,
+        limit: int,
+    ) -> list[ConversationMessage]:
+        """读取游标之前的一页消息，并按时间正序返回。"""
+        if before_message_id is None:
+            query = """
+                SELECT id, role, content, created_at, exchange_id
+                FROM (
+                    SELECT id, role, content, created_at, exchange_id
+                    FROM tourism_agent.conversation_messages
+                    WHERE trip_id = %s
+                    ORDER BY id DESC
+                    LIMIT %s
+                ) AS page
+                ORDER BY id ASC
+            """
+            params = (trip_id, limit)
+        else:
+            query = """
+                SELECT id, role, content, created_at, exchange_id
+                FROM (
+                    SELECT id, role, content, created_at, exchange_id
+                    FROM tourism_agent.conversation_messages
+                    WHERE trip_id = %s AND id < %s
+                    ORDER BY id DESC
+                    LIMIT %s
+                ) AS page
+                ORDER BY id ASC
+            """
+            params = (trip_id, before_message_id, limit)
+
+        async with self._database.connection() as connection:
+            cursor = await connection.execute(query, params)
+            rows = await cursor.fetchall()
+        return [ConversationMessage.model_validate(row) for row in rows]
+
     async def save_conversation_chunk(self, chunk: ConversationChunkDraft) -> None:
         """原子绑定 Exchange，并保存一问一答对应的向量 Chunk。"""
         embedding_literal = json.dumps(chunk.embedding, separators=(",", ":"))

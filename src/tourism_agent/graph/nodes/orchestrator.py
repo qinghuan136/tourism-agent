@@ -138,7 +138,8 @@ def create_review_node(model: BaseChatModel) -> OrchestratorNode:
 
 def create_finalize_node(model: BaseChatModel) -> OrchestratorNode:
     """创建仅汇总任务结果且不重复完整行程的最终回复节点。"""
-    finalizer = model.with_config(tags=["orchestrator", "finalize"])
+    # 这是唯一允许 SSE 转发 Token 的模型调用，其他模型事件均视为内部过程。
+    finalizer = model.with_config(tags=["orchestrator", "finalize", "public_output"])
 
     async def finalize_response(state: RootState) -> dict[str, object]:
         final_context = {

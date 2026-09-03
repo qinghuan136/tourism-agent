@@ -128,6 +128,46 @@ def test_recent_conversation_excludes_current_message_and_respects_limit() -> No
     run_async(scenario())
 
 
+def test_conversation_page_excludes_cursor_and_restores_chronological_order() -> None:
+    """前端向上翻页时不能重复游标消息，也不能收到倒序页面。"""
+
+    async def scenario() -> None:
+        from tourism_agent.models.context import ConversationRole
+        from tourism_agent.repositories.planning import PlanningRepository
+
+        user_id = uuid4()
+        trip_id = uuid4()
+        database = PostgresDatabase(DatabaseSettings())
+        await database.open()
+        try:
+            await seed_scope(database, user_id, trip_id)
+            repository = PlanningRepository(database)
+            await repository.append_conversation(trip_id, ConversationRole.USER, "第一条")
+            second = await repository.append_conversation(
+                trip_id, ConversationRole.ASSISTANT, "第二条"
+            )
+            third = await repository.append_conversation(
+                trip_id, ConversationRole.USER, "第三条"
+            )
+            cursor = await repository.append_conversation(
+                trip_id, ConversationRole.ASSISTANT, "游标消息"
+            )
+
+            messages = await repository.get_conversation_page(
+                trip_id,
+                before_message_id=cursor.id,
+                limit=2,
+            )
+
+            assert [message.id for message in messages] == [second.id, third.id]
+            assert [message.content for message in messages] == ["第二条", "第三条"]
+        finally:
+            await delete_scope(database, user_id)
+            await database.close()
+
+    run_async(scenario())
+
+
 def test_repository_persists_trip_context_and_reads_current_itinerary() -> None:
     """TripContext 保持动态 JSONB，CurrentItinerary 能按旅行作用域读取。"""
 

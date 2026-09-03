@@ -41,6 +41,7 @@ class StructuredOrchestratorFakeModel:
         self.plan_messages: list[BaseMessage] = []
         self.review_messages: list[BaseMessage] = []
         self.finalize_messages: list[BaseMessage] = []
+        self.finalize_tags: list[str] = []
 
     def with_structured_output(self, schema: type[BaseModel]) -> RunnableLambda:
         def respond(messages: list[BaseMessage]) -> BaseModel:
@@ -79,8 +80,9 @@ class StructuredOrchestratorFakeModel:
 
     def with_config(self, **kwargs: object) -> RunnableLambda:
         def respond(messages: list[BaseMessage]) -> AIMessage:
-            if kwargs["tags"] == ["orchestrator", "finalize"]:
+            if kwargs["tags"] == ["orchestrator", "finalize", "public_output"]:
                 self.finalize_messages = messages
+                self.finalize_tags = kwargs["tags"]  # type: ignore[assignment]
             return AIMessage(
                 content="已筛选并调研沙面，等待你确认行程调整。"
             )
@@ -206,6 +208,7 @@ def test_finalize_node_does_not_repeat_full_itinerary() -> None:
     result = asyncio.run(create_finalize_node(model)(state))  # type: ignore[arg-type]
 
     assert result == {"response": "已筛选并调研沙面，等待你确认行程调整。"}
+    assert model.finalize_tags == ["orchestrator", "finalize", "public_output"]
     assert "第一天：" not in result["response"]
     finalize_input = str(model.finalize_messages[-1].content)
     assert "寻找合适地点后加入行程" in finalize_input

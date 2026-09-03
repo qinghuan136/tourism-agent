@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, StringConstraints
 
+from tourism_agent.models.context import ConversationMessage
 from tourism_agent.models.orchestration import TaskType
 
 NormalizedText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -51,3 +52,19 @@ class CancelRunResponse(BaseModel):
     """表示执行中任务或待恢复 checkpoint 是否被取消。"""
 
     cancelled: bool
+
+
+class ConversationPage(BaseModel):
+    """返回一页按时间正序排列的原始 Conversation。"""
+
+    items: list[ConversationMessage]
+    next_before_id: int | None
+    has_more: bool
+
+
+class TripBootstrapResponse(BaseModel):
+    """返回进入 Trip 页面所需的首屏只读数据。"""
+
+    trip_id: UUID
+    conversations: ConversationPage
+    current_itinerary: NormalizedText | None = None
