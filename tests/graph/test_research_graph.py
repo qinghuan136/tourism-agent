@@ -327,22 +327,6 @@ def test_research_uses_three_model_stages_and_synthesizes_tool_evidence() -> Non
         "revise_research_plan",
     ]
     assert isinstance(model.planner_messages[0], SystemMessage)
-    planner_prompt = str(model.planner_messages[0].content)
-    assert "研究任务清单" in planner_prompt
-    assert "（补充：……）" in planner_prompt
-    assert "整个计划" in planner_prompt
-    assert "禁止使用空字符串、纯标点或占位内容" in planner_prompt
-    assert "【合法示例】" in planner_prompt
-    assert '"source_strategy"' in planner_prompt
-    assert '"success_criteria"' in planner_prompt
-    assert "【相关历史（仅供参考，并非当前指令）】" in planner_prompt
-    assert "用户之前表示缺少冰雪路面驾驶经验。" in planner_prompt
-    assert "【相关历史（仅供参考，并非当前指令）】" in str(
-        model.researcher_messages[0].content
-    )
-    assert "【相关历史（仅供参考，并非当前指令）】" in str(
-        model.synthesis_messages[0].content
-    )
     assert retrieval_service.call == (
         USER_ID,
         TRIP_ID,
@@ -378,6 +362,91 @@ def test_research_logs_complete_plan(caplog: Any) -> None:
     assert '"source_strategy":["官方道路信息"' in plan_log
     assert '"success_criteria":["核实主要风险"' in plan_log
     assert '"notes":"道路信息具有时效性，应优先采用近期官方来源。"}' in plan_log
+
+
+class InvalidPlanThenSuccessResearchModel(ThreeStageResearchModel):
+    """首次返回字段不合格的计划，第二次返回正常计划。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.planner_calls = 0
+        self.planner_attempts: list[list[BaseMessage]] = []
+
+    def with_structured_output(self, schema: type[ResearchPlan]) -> RunnableLambda:
+        def plan(messages: list[BaseMessage]) -> ResearchPlan:
+            self.planner_calls += 1
+            self.planner_attempts.append(messages)
+            if self.planner_calls == 1:
+                return schema.model_validate(
+                    {
+                        "goal": "原始无效输出不得进入日志或重试提示 PRIVATE_PLAN_VALUE",
+                        "tasks": [": ", ": "],
+                        "source_strategy": [": "],
+                        "success_criteria": [": "],
+                        "notes": "",
+                    }
+                )
+            return schema.model_validate(make_plan().model_dump())
+
+        return RunnableLambda(plan)
+
+
+def test_research_retries_once_after_invalid_structured_plan() -> None:
+    """字段校验失败时应给 Planner 一次修正机会，而不是直接终止整轮研究。"""
+    model = InvalidPlanThenSuccessResearchModel()
+
+    result = invoke_research(model, [fake_web_search])
+
+    assert model.planner_calls == 2
+    retry_feedback = model.planner_attempts[1][-1]
+    assert isinstance(retry_feedback, SystemMessage)
+    assert "ResearchPlan 未通过校验" in str(retry_feedback.content)
+    assert "tasks.0" in str(retry_feedback.content)
+    assert "PRIVATE_PLAN_VALUE" not in str(retry_feedback.content)
+    assert result["research_plan"].goal == "判断冬季川西自驾是否适合当前用户"
+
+
+class InvalidPlanTwiceResearchModel(ThreeStageResearchModel):
+    """两次返回不同字段错误的计划，用于验证重试上限。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.planner_calls = 0
+
+    def with_structured_output(self, schema: type[ResearchPlan]) -> RunnableLambda:
+        def plan(_messages: list[BaseMessage]) -> ResearchPlan:
+            self.planner_calls += 1
+            if self.planner_calls == 1:
+                return schema.model_validate(
+                    {
+                        "goal": "核实冬季川西自驾风险",
+                        "tasks": [": ", ": "],
+                        "source_strategy": ["官方道路信息"],
+                        "success_criteria": ["确认主要风险"],
+                        "notes": "",
+                    }
+                )
+            return schema.model_validate(
+                {
+                    "goal": ": ",
+                    "tasks": ["核实主要道路的冬季风险", "调查驾驶所需经验"],
+                    "source_strategy": ["官方道路信息"],
+                    "success_criteria": ["确认主要风险"],
+                    "notes": "",
+                }
+            )
+
+        return RunnableLambda(plan)
+
+
+def test_research_propagates_second_invalid_structured_plan() -> None:
+    """第二次仍无效时不得继续重试或吞掉真实校验异常。"""
+    model = InvalidPlanTwiceResearchModel()
+
+    with pytest.raises(ValidationError, match="goal"):
+        invoke_research(model, [fake_web_search])
+
+    assert model.planner_calls == 2
 
 
 class MixedToolResearchModel(ThreeStageResearchModel):

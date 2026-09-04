@@ -2,6 +2,8 @@
 import { computed, ref, watch } from 'vue'
 
 import MarkdownContent from '@/components/content/MarkdownContent.vue'
+import RunStatus from '@/components/run-control/RunStatus.vue'
+import type { RunIssue } from '@/api/errors'
 import type {
   ConversationRunStatus,
   HistoryStatus,
@@ -17,7 +19,7 @@ const props = defineProps<{
   bootstrap: TripBootstrap | null
   runStatus: ConversationRunStatus
   runFeedback: string | null
-  runError: string | null
+  runIssue: RunIssue | null
   candidateItinerary: string | null
   liveMessages: LiveConversationMessage[]
   taskResults: StreamedTaskResult[]
@@ -30,20 +32,30 @@ const emit = defineEmits<{
   sendMessage: [message: string]
   confirmCandidate: [accepted: boolean]
   cancelRun: []
+  retrySame: []
+  retryNew: []
+  restoreCandidate: []
+  leaveTrip: []
 }>()
 
 const message = ref('')
-const isTemporaryOutputClosed = ref(false)
+const isTemporaryOutputExpanded = ref(true)
 const canSendMessage = computed(
   () =>
     props.status === 'ready' &&
     props.runStatus !== 'running' &&
+    props.runStatus !== 'interrupted' &&
+    props.runStatus !== 'blocked' &&
+    props.runIssue === null &&
     props.candidateItinerary === null,
 )
 const canCancelRun = computed(
   () =>
     props.status === 'ready' &&
-    (props.runStatus === 'running' || props.runStatus === 'waiting_user'),
+    (props.runStatus === 'running' ||
+      props.runStatus === 'waiting_user' ||
+      props.runStatus === 'interrupted' ||
+      props.runStatus === 'blocked'),
 )
 const taskModuleLabels: Record<StreamedTaskResult['module'], string> = {
   planning: '规划结果',
@@ -54,10 +66,6 @@ const taskModuleLabels: Record<StreamedTaskResult['module'], string> = {
 const hasTemporaryOutput = computed(
   () => props.candidateItinerary !== null || props.taskResults.length > 0,
 )
-const isTemporaryOutputVisible = computed(
-  () => hasTemporaryOutput.value && !isTemporaryOutputClosed.value,
-)
-
 watch(
   [() => props.candidateItinerary, () => props.taskResults.length],
   ([candidateItinerary, taskResultCount], [previousCandidateItinerary, previousTaskResultCount]) => {
@@ -65,7 +73,7 @@ watch(
       (candidateItinerary && candidateItinerary !== previousCandidateItinerary) ||
       taskResultCount > previousTaskResultCount
     ) {
-      isTemporaryOutputClosed.value = false
+      isTemporaryOutputExpanded.value = true
     }
   },
 )
@@ -77,8 +85,8 @@ function submitMessage(): void {
   message.value = ''
 }
 
-function closeTemporaryOutput(): void {
-  isTemporaryOutputClosed.value = true
+function toggleTemporaryOutput(): void {
+  isTemporaryOutputExpanded.value = !isTemporaryOutputExpanded.value
 }
 </script>
 
@@ -103,58 +111,6 @@ function closeTemporaryOutput(): void {
         />
       </div>
       <div class="conversation-content">
-        <section
-          v-if="isTemporaryOutputVisible"
-          class="temporary-output"
-          data-testid="temporary-output-panel"
-          aria-label="本轮临时内容"
-        >
-          <div class="temporary-output__header">
-            <p>本轮临时内容</p>
-            <button
-              type="button"
-              aria-label="关闭本轮临时内容"
-              @click="closeTemporaryOutput"
-            >
-              关闭
-            </button>
-          </div>
-          <div
-            v-if="candidateItinerary"
-            class="temporary-output__candidate"
-          >
-            <p class="temporary-output__label">
-              候选行程
-            </p>
-            <MarkdownContent
-              class="current-itinerary"
-              :content="candidateItinerary"
-            />
-          </div>
-          <section
-            v-if="taskResults.length > 0"
-            class="task-results"
-            aria-label="本轮子任务结果"
-          >
-            <details
-              v-for="(taskResult, index) in taskResults"
-              :key="`${taskResult.taskId}-${index}`"
-              class="task-result"
-              open
-            >
-              <summary class="task-result__summary">
-                <span>{{ taskModuleLabels[taskResult.module] }}</span>
-                <span class="task-result__status">
-                  {{ taskResult.status === 'success' ? '已完成' : taskResult.status === 'partial' ? '部分完成' : '失败' }}
-                </span>
-              </summary>
-              <MarkdownContent
-                class="task-result__content"
-                :content="taskResult.result"
-              />
-            </details>
-          </section>
-        </section>
         <div class="conversation-scroll-area">
           <p
             v-if="status === 'loading' || status === 'idle'"
@@ -247,23 +203,18 @@ function closeTemporaryOutput(): void {
                 </article>
               </li>
             </ol>
-            <div
-              v-if="(runFeedback || runError) && !(candidateItinerary && runStatus === 'waiting_user')"
-              class="run-feedback"
-            >
-              <p
-                v-if="runFeedback"
-                role="status"
-              >
-                {{ runFeedback }}
-              </p>
-              <p
-                v-if="runError"
-                role="alert"
-              >
-                {{ runError }}
-              </p>
-            </div>
+            <RunStatus
+              v-if="runIssue || canCancelRun || !(candidateItinerary && runStatus === 'waiting_user')"
+              :feedback="runFeedback"
+              :issue="runIssue"
+              :can-cancel="canCancelRun"
+              :is-cancelling="isCancelling"
+              @retry-same="emit('retrySame')"
+              @retry-new="emit('retryNew')"
+              @restore-candidate="emit('restoreCandidate')"
+              @cancel="emit('cancelRun')"
+              @leave-trip="emit('leaveTrip')"
+            />
           </template>
         </div>
         <form
@@ -316,15 +267,6 @@ function closeTemporaryOutput(): void {
           >
             等待确认期间不能输入新消息；可确认、拒绝或取消当前任务。
           </p>
-          <button
-            v-if="canCancelRun"
-            class="cancel-run-button"
-            type="button"
-            :disabled="isCancelling"
-            @click="emit('cancelRun')"
-          >
-            {{ isCancelling ? '正在取消…' : '取消当前任务' }}
-          </button>
         </form>
       </div>
     </section>
@@ -343,6 +285,67 @@ function closeTemporaryOutput(): void {
           </h2>
         </div>
       </div>
+
+      <section
+        v-if="hasTemporaryOutput"
+        class="temporary-output"
+        data-testid="temporary-output-panel"
+        aria-label="本轮临时内容"
+      >
+        <button
+          class="temporary-output__header"
+          type="button"
+          :aria-expanded="isTemporaryOutputExpanded"
+          aria-controls="temporary-output-content"
+          :aria-label="isTemporaryOutputExpanded ? '收起本轮临时内容' : '展开本轮临时内容'"
+          @click="toggleTemporaryOutput"
+        >
+          <span>本轮临时内容</span>
+          <span>{{ isTemporaryOutputExpanded ? '收起' : '展开' }}</span>
+        </button>
+        <div
+          v-if="isTemporaryOutputExpanded"
+          id="temporary-output-content"
+          class="temporary-output__content"
+          data-testid="temporary-output-content"
+        >
+          <div
+            v-if="candidateItinerary"
+            class="temporary-output__candidate"
+          >
+            <p class="temporary-output__label">
+              候选行程
+            </p>
+            <MarkdownContent
+              class="current-itinerary"
+              :content="candidateItinerary"
+            />
+          </div>
+          <section
+            v-if="taskResults.length > 0"
+            class="task-results"
+            aria-label="本轮子任务结果"
+          >
+            <details
+              v-for="(taskResult, index) in taskResults"
+              :key="`${taskResult.taskId}-${index}`"
+              class="task-result"
+              open
+            >
+              <summary class="task-result__summary">
+                <span>{{ taskModuleLabels[taskResult.module] }}</span>
+                <span class="task-result__status">
+                  {{ taskResult.status === 'success' ? '已完成' : taskResult.status === 'partial' ? '部分完成' : '失败' }}
+                </span>
+              </summary>
+              <MarkdownContent
+                class="task-result__content"
+                :content="taskResult.result"
+              />
+            </details>
+          </section>
+        </div>
+      </section>
 
       <div
         class="itinerary-panel itinerary-panel--current"

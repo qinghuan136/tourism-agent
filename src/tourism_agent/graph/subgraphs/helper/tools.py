@@ -13,6 +13,9 @@ from tourism_agent.graph.subgraphs.helper.state import HelperState
 from tourism_agent.infrastructure.logging_config import log_preview
 
 HELPER_QUERY_TOOL_NAMES = {
+    "get_current_datetime",
+    "calculate_date",
+    "calculate_trip_duration",
     "get_weather",
     "search_places",
     "get_place_details",

@@ -327,10 +327,13 @@ ResearchPlan 在综合阶段是覆盖检查清单，不是事实来源。报告�
 
 ### 7.1 公共只读 Tools
 
-Research 可以使用现有十个公共查询 Tool：
+Research 可以使用现有十三个公共只读 Tool：
 
 | Tool | Research 中的职责 |
 |---|---|
+| `get_current_datetime` | 获取中国标准时间下的当前日期、时间和星期 |
+| `calculate_date` | 计算绝对日期的天数偏移 |
+| `calculate_trip_duration` | 计算旅行自然日数和住宿晚数 |
 | `web_search` | 发现相关来源和近期信息 |
 | `extract_web_content` | 提取少量关键网页正文 |
 | `get_weather` | 核实中国大陆指定地点和日期的天气 |
@@ -341,6 +344,8 @@ Research 可以使用现有十个公共查询 Tool：
 | `measure_travel_distance` | 比较多个地点的距离、预计耗时和通勤成本 |
 | `map_web_site` | 发现单一网站的页面结构，为站内调查筛选目标页面 |
 | `crawl_web_site` | 从单一网站抓取少量与研究任务相关的页面内容 |
+
+前三个日期时间 Tool 是本地确定性能力，不访问外部服务；其余查询结果仍按不可信外部证据处理。
 
 其中 `web_search` 和 `extract_web_content` 是通用研究的主要能力；涉及交通可达性、地点组合或通勤成本时，再调用路线和距离 Tool。需要调查单一网站的多个页面时，采用 `map_web_site → crawl_web_site`，而不是用 Crawl 代替开放网页搜索；已有少量明确 URL 时仍优先使用 `extract_web_content`。
 

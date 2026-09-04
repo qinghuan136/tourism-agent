@@ -1,4 +1,5 @@
 import { runtimeConfig } from '@/config/runtime'
+import { toMessageRequestError, toNetworkRequestError, toProtocolRequestError } from '@/api/errors'
 
 export interface StreamMessageRequest {
   userId: string
@@ -64,13 +65,6 @@ export type StreamMessageOutcome =
   | { kind: 'processing' }
   | { kind: 'replay'; result: MessageResult }
 
-export class MessageStreamError extends Error {
-  constructor(message: string, public readonly kind: 'http' | 'protocol') {
-    super(message)
-    this.name = 'MessageStreamError'
-  }
-}
-
 export interface SendStreamedMessageOptions {
   signal?: AbortSignal
   onEvent?: (event: MessageStreamEvent) => void
@@ -81,27 +75,33 @@ export async function sendStreamedMessage(
   request: StreamMessageRequest,
   options: SendStreamedMessageOptions = {},
 ): Promise<StreamMessageOutcome> {
-  const response = await fetch(`${runtimeConfig.apiBaseUrl}/messages/stream`, {
-    method: 'POST',
-    headers: {
-      Accept: 'text/event-stream, application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      user_id: request.userId,
-      trip_id: request.tripId,
-      idempotency_id: request.idempotencyId,
-      message: request.message,
-    }),
-    signal: options.signal,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${runtimeConfig.apiBaseUrl}/messages/stream`, {
+      method: 'POST',
+      headers: {
+        Accept: 'text/event-stream, application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        user_id: request.userId,
+        trip_id: request.tripId,
+        idempotency_id: request.idempotencyId,
+        message: request.message,
+      }),
+      signal: options.signal,
+    })
+  } catch {
+    throw toNetworkRequestError()
+  }
 
   const contentType = response.headers.get('content-type') ?? ''
   if (!contentType.includes('text/event-stream')) {
     return parseNonStreamResponse(response, request.idempotencyId)
   }
   if (!response.ok || !response.body) {
-    throw new MessageStreamError('流式响应不可用，请稍后重试', 'http')
+    if (!response.ok) throw toMessageRequestError(response.status, null)
+    throw toProtocolRequestError('流式响应不可用，请使用原请求重试或取消当前任务')
   }
 
   const reader = response.body.getReader()
@@ -126,7 +126,7 @@ export async function sendStreamedMessage(
   }
 
   if (completionStatus === null) {
-    throw new MessageStreamError('流式响应在结束前断开，请查看当前对话或重试', 'protocol')
+    throw toProtocolRequestError('流式响应在结束前断开，请使用原请求重试或取消当前任务')
   }
   return { kind: 'stream', status: completionStatus }
 }
@@ -142,7 +142,7 @@ async function parseNonStreamResponse(
   if (response.ok && isMessageResultResponse(body)) {
     return { kind: 'replay', result: toMessageResult(body) }
   }
-  throw new MessageStreamError(toHttpErrorMessage(response.status, body), 'http')
+  throw toMessageRequestError(response.status, body)
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -178,10 +178,10 @@ function parseSseFrame(frame: string, expectedIdempotencyId: string): MessageStr
   try {
     data = JSON.parse(encodedData)
   } catch {
-    throw new MessageStreamError('流式响应格式无效，请重试', 'protocol')
+    throw toProtocolRequestError('流式响应格式无效，请使用原请求重试或取消当前任务')
   }
   if (!isStreamEventBase(data) || data.idempotency_id !== expectedIdempotencyId) {
-    throw new MessageStreamError('流式响应与当前请求不匹配，请重试', 'protocol')
+    throw toProtocolRequestError('流式响应与当前请求不匹配，请使用原请求重试或取消当前任务')
   }
   return toStreamEvent(eventType, data)
 }
@@ -259,7 +259,7 @@ function toStreamEvent(type: string, data: StreamEventBaseResponse): MessageStre
   if (type === 'run.completed' && isStreamRunStatus(data.status)) {
     return { ...base, type, status: data.status }
   }
-  throw new MessageStreamError('流式响应事件格式无效，请重试', 'protocol')
+  throw toProtocolRequestError('流式响应事件格式无效，请使用原请求重试或取消当前任务')
 }
 
 interface StreamEventBaseResponse extends Record<string, unknown> {
@@ -309,11 +309,6 @@ function toMessageResult(response: MessageResultResponse): MessageResult {
     candidateItinerary: response.candidate_itinerary,
     currentItinerary: response.current_itinerary,
   }
-}
-
-function toHttpErrorMessage(status: number, body: unknown): string {
-  if (isRecord(body) && typeof body.detail === 'string') return body.detail
-  return `消息发送失败，HTTP 状态码：${status}`
 }
 
 function isRoute(value: unknown): value is MessageResult['route'] {

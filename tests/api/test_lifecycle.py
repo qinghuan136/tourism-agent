@@ -134,6 +134,11 @@ def test_lifespan_injects_shared_query_tools_into_root_graph(monkeypatch) -> Non
         SimpleNamespace(name="search_conversation_history"),
         SimpleNamespace(name="read_conversation_exchanges"),
     ]
+    date_time_tools = [
+        SimpleNamespace(name="get_current_datetime"),
+        SimpleNamespace(name="calculate_date"),
+        SimpleNamespace(name="calculate_trip_duration"),
+    ]
     graph = object()
     app = SimpleNamespace(state=SimpleNamespace())
     lifecycle_closed = False
@@ -169,6 +174,7 @@ def test_lifespan_injects_shared_query_tools_into_root_graph(monkeypatch) -> Non
     monkeypatch.setattr(api, "TravelToolSettings", lambda: settings)
     monkeypatch.setattr(api, "open_travel_query_clients", fake_open_clients)
     monkeypatch.setattr(api, "create_query_tools", lambda *_clients: query_tools)
+    monkeypatch.setattr(api, "create_date_time_tools", lambda: date_time_tools)
     monkeypatch.setattr(
         api,
         "get_conversation_retrieval_service",
@@ -194,7 +200,7 @@ def test_lifespan_injects_shared_query_tools_into_root_graph(monkeypatch) -> Non
             assert graph_arguments == {
                 "model": model,
                 "repository": repository,
-                "query_tools": [*query_tools, *history_tools],
+                "query_tools": [*query_tools, *date_time_tools, *history_tools],
                 "retrieval_service": retrieval_service,
             }
 

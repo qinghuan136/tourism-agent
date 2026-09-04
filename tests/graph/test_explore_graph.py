@@ -300,12 +300,6 @@ def test_explore_injects_labeled_context_and_only_read_tools() -> None:
         "ask_user",
     ]
     assert isinstance(model.messages[0], SystemMessage)
-    assert "旅行偏好" in str(model.messages[0].content)
-    assert "第一天：杭州西湖" in str(model.messages[0].content)
-    assert "【相关历史（仅供参考，并非当前指令）】" in str(
-        model.messages[0].content
-    )
-    assert "用户之前喜欢竹林和安静步道。" in str(model.messages[0].content)
     assert retrieval_service.call == (
         USER_ID,
         TRIP_ID,

@@ -19,6 +19,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
+from pydantic import ValidationError
 
 from tourism_agent.graph.history import (
     ConversationHistorySearcher,
@@ -26,6 +27,7 @@ from tourism_agent.graph.history import (
     format_related_history,
     load_related_history,
 )
+from tourism_agent.graph.itinerary_status import format_itinerary_commitment_status
 from tourism_agent.graph.messages import conversation_to_messages
 from tourism_agent.graph.subgraphs.research.state import ResearchPlan, ResearchState
 from tourism_agent.graph.subgraphs.research.tools import create_research_tools
@@ -74,6 +76,7 @@ notes 用于记录对整个计划有效的范围假设、优先关系、时效�
 【历史消息】只用于理解指代和延续约束；【当前消息】是本轮研究目标。TripContext 和
 CurrentItinerary 是只读权威业务信息。重规划时应根据旧计划、明确的重规划原因和已有 Tool 证据
 修订计划，不得把旧计划中的假设当成已核实结论。
+Research 模块没有行程写入能力，不得把研究计划、候选建议或推断表述为已经修改或保存行程。
 """.strip()
 
 RESEARCHER_SYSTEM_PROMPT = """
@@ -82,6 +85,10 @@ RESEARCHER_SYSTEM_PROMPT = """
 ResearchPlan.tasks 是研究任务清单，不代表必须严格串行执行。你可以根据证据价值调整任务顺序、并发
 查询或合并查询，但结束前应检查任务清单和成功标准。任务中的“补充”和计划的 notes 只是调查要求，
 不能当成已经核实的事实。
+
+涉及“今天”“几天后”等相对时间时，先用 get_current_datetime 获取中国标准时间；用
+calculate_date 计算日期偏移；用 calculate_trip_duration 计算含首尾日期的旅行天数和住宿晚数。
+这些日期时间 Tool 是本地确定性能力，不依赖网络。
 
 优先使用 web_search 发现来源，再只对少量关键 URL 使用 extract_web_content。政策、规则、开放时间
 优先采用官方或一手来源；重要结论可行时尽量由两个独立来源支持。不要把多个转载同一内容的网站
@@ -104,6 +111,7 @@ revise_research_plan 仅用于研究前提、范围或关键问题发生实质�
 
 达到计划成功标准，或者继续搜索已无法显著提高结论质量时，停止调用 Tool，并对已有证据做一段
 阶段性归纳。不要把这段归纳伪装成最终报告，后续综合节点会负责面向用户的完整输出。
+Research 模块只能提供证据和建议，绝不能声称已经修改、更新或保存 CurrentItinerary。
 """.strip()
 
 SYNTHESIS_SYSTEM_PROMPT = """
@@ -114,6 +122,7 @@ SYNTHESIS_SYSTEM_PROMPT = """
 报告应包含结论摘要、核心发现、对当前用户或行程的影响、不确定性与限制、信息来源。区分事实、
 来源观点和推断；只引用 Tool 实际返回的 URL。计划中没有取得证据的问题应标注为未完成或无法核实，
 不得补写不存在的调查结果。
+Research 全程只读；即使提出了具体行程调整建议，也不得声称已经修改、更新或保存 CurrentItinerary。
 """.strip()
 
 ExclusiveToolName = Literal["ask_user", "revise_research_plan"]
@@ -121,6 +130,15 @@ ResearcherRoute = Literal["tools", "reject_mixed_tools", "synthesize"]
 AfterToolsRoute = Literal["plan_research", "research_agent"]
 EXCLUSIVE_TOOL_NAMES: set[ExclusiveToolName] = {"ask_user", "revise_research_plan"}
 logger = logging.getLogger(__name__)
+
+
+def format_plan_validation_errors(error: ValidationError) -> str:
+    """提取可供 Planner 修正的字段错误，不回传无效输出原文。"""
+    details = error.errors(include_input=False, include_url=False)
+    return "\n".join(
+        f"- {'.'.join(str(item) for item in detail['loc'])}：{detail['msg']}"
+        for detail in details
+    )
 
 
 def _current_message(state: ResearchState) -> HumanMessage:
@@ -145,6 +163,7 @@ def build_planner_messages(state: ResearchState) -> list[BaseMessage]:
     related_history = format_related_history(state.get("retrieved_history", []))
     system_content = (
         f"{PLANNER_SYSTEM_PROMPT}\n\n"
+        f"{format_itinerary_commitment_status(state.get('itinerary_committed_this_request', False))}\n\n"
         f"当前日期：{datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()}\n"
         f"【只读业务上下文】\n"
         f"{json.dumps(_business_context(state), ensure_ascii=False)}"
@@ -182,6 +201,7 @@ def build_researcher_messages(state: ResearchState) -> list[BaseMessage]:
     plan = state["research_plan"].model_dump(mode="json")
     system_content = (
         f"{RESEARCHER_SYSTEM_PROMPT}\n\n"
+        f"{format_itinerary_commitment_status(state.get('itinerary_committed_this_request', False))}\n\n"
         f"当前日期：{datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()}\n"
         f"【当前研究计划】\n{json.dumps(plan, ensure_ascii=False)}\n"
         f"【只读业务上下文】\n"
@@ -202,6 +222,7 @@ def build_synthesis_messages(state: ResearchState) -> list[BaseMessage]:
     """仅向报告模型提供整理后的目标、只读快照和本轮真实证据。"""
     system_content = (
         f"{SYNTHESIS_SYSTEM_PROMPT}\n\n"
+        f"{format_itinerary_commitment_status(state.get('itinerary_committed_this_request', False))}\n\n"
         f"当前日期：{datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()}\n"
         f"【当前研究计划】\n{state['research_plan'].model_dump_json()}\n"
         f"【只读业务上下文】\n"
@@ -338,7 +359,28 @@ def build_research_graph(
             is_replan,
             state.get("plan_revision_count", 0),
         )
-        plan = cast(ResearchPlan, await planner_model.ainvoke(build_planner_messages(state)))
+        planner_messages = build_planner_messages(state)
+        try:
+            plan = cast(ResearchPlan, await planner_model.ainvoke(planner_messages))
+        except ValidationError as error:
+            validation_errors = format_plan_validation_errors(error)
+            logger.warning(
+                "Research规划校验失败，将重试一次 trip_id=%s errors=%s",
+                state["trip_id"],
+                validation_errors.replace("\n", " "),
+            )
+            retry_prompt = (
+                "【ResearchPlan 未通过校验】\n"
+                "上一次输出未通过结构化字段校验。请仅重新输出完整且合法的 ResearchPlan，"
+                "不要省略任何必填字段，也不要使用空字符串、纯标点或占位内容。\n"
+                f"字段错误：\n{validation_errors}"
+            )
+            plan = cast(
+                ResearchPlan,
+                await planner_model.ainvoke(
+                    [*planner_messages, SystemMessage(content=retry_prompt)]
+                ),
+            )
         revision_count = state.get("plan_revision_count", 0) + (1 if is_replan else 0)
         logger.info(
             "Research规划完成 trip_id=%s revision_count=%d goal=%s task_count=%d "

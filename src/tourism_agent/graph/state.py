@@ -32,3 +32,5 @@ class RootState(TypedDict):
     response: NotRequired[str]
     candidate_itinerary: NotRequired[str | None]
     current_itinerary: NotRequired[str | None]
+    # 仅在候选行程被用户确认且数据库写入成功后设为 True。
+    itinerary_committed_this_request: NotRequired[bool]

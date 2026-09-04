@@ -26,6 +26,7 @@ from tourism_agent.graph.history import (
     format_related_history,
     load_related_history,
 )
+from tourism_agent.graph.itinerary_status import format_itinerary_commitment_status
 from tourism_agent.graph.messages import conversation_to_messages
 from tourism_agent.graph.subgraphs.helper.state import HelperState
 from tourism_agent.graph.subgraphs.helper.tools import create_helper_tools
@@ -45,7 +46,11 @@ HELPER_SYSTEM_PROMPT = """
 查询车次、票价和余票属于允许的只读查询，与购票、提交订单和支付不同。涉及日期、价格、库存、
 营业状态等时效性信息时必须在本轮重新查询，历史回答不能替代本轮查询；查询失败后再如实说明限制。
 
-你可以调用以下只读查询 Tool：get_weather 查询中国大陆天气；search_places 发现地点并取得 POI ID；
+涉及“今天”“几天后”等相对时间时，先用 get_current_datetime 获取中国标准时间；用
+calculate_date 计算日期偏移；用 calculate_trip_duration 计算含首尾日期的旅行天数和住宿晚数。
+这些日期时间 Tool 是本地确定性能力，不依赖网络。
+
+你可以调用以下只读外部查询 Tool：get_weather 查询中国大陆天气；search_places 发现地点并取得 POI ID；
 get_place_details 根据 POI ID 核查地点详情；search_nearby_places 查询指定中心附近的地点；web_search
 搜索开放网页信息；extract_web_content 提取少量已选网页正文；plan_route 规划中国大陆境内路线；
 measure_travel_distance 批量估算出行距离和时间。普通查询型 Tool 可以在同一轮并发调用。
@@ -147,6 +152,7 @@ def build_system_prompt(state: HelperState) -> str:
     related_history = format_related_history(state.get("retrieved_history", []))
     prompt = (
         f"{HELPER_SYSTEM_PROMPT}\n\n"
+        f"{format_itinerary_commitment_status(state.get('itinerary_committed_this_request', False))}\n\n"
         f"当前日期：{datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()}\n"
         f"【只读业务上下文】\n{json.dumps(context, ensure_ascii=False)}"
     )

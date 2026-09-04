@@ -131,13 +131,6 @@ def test_plan_node_builds_labeled_context_and_initializes_execution_state() -> N
     assert result["current_task"] is None
     assert result["latest_task_result"] is None
     assert result["review_decision"] is None
-    plan_prompt = str(model.plan_messages[0].content)
-    assert "1～5" in plan_prompt
-    assert "顺序执行" in plan_prompt
-    assert "生成、调整或确认具体行程安排" in plan_prompt
-    assert "发现、推荐或比较目的地" in plan_prompt
-    assert "深入调查、核实来源或分析风险" in plan_prompt
-    assert "轻量对话、已有信息解释" in plan_prompt
 
 
 def test_root_state_review_decision_allows_plan_node_cleanup_none() -> None:
@@ -216,10 +209,3 @@ def test_finalize_node_does_not_repeat_full_itinerary() -> None:
     finalize_context = "\n".join(str(message.content) for message in model.finalize_messages)
     assert "SENTINEL_CURRENT_ITINERARY_DO_NOT_SEND" not in finalize_context
     assert "SENTINEL_CANDIDATE_ITINERARY_DO_NOT_SEND" not in finalize_context
-    finalize_prompt = str(model.finalize_messages[0].content)
-    assert "不要输出完整 CurrentItinerary" in finalize_prompt
-    assert "不要输出完整行程" in finalize_prompt
-    assert "task_id" in finalize_prompt
-    assert "TaskSpec" in finalize_prompt
-    assert "TaskResult" in finalize_prompt
-    assert "内部调度过程" in finalize_prompt

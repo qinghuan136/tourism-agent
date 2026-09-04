@@ -1,0 +1,19 @@
+name: 功能建议
+description: 提出明确的旅行场景改进建议
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: 要解决的旅行场景
+      description: 请描述实际用户需求，而不是只描述技术方案。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 建议方案
+      description: 可选。说明预期交互、涉及模块和边界。
+  - type: textarea
+    attributes:
+      label: 替代方案
+      description: 可选。说明为什么现有能力无法满足。

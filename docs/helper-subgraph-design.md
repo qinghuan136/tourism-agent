@@ -38,6 +38,9 @@ Helper 只绑定以下公共只读 Tools 和自己的 `ask_user`：
 
 | Tool | 职责 |
 |---|---|
+| `get_current_datetime` | 返回中国标准时间下的当前日期、时间和星期 |
+| `calculate_date` | 计算绝对日期前后若干天的日期 |
+| `calculate_trip_duration` | 计算旅行自然日数和住宿晚数 |
 | `get_weather` | 查询中国大陆地点在指定时间段的天气 |
 | `search_places` | 按关键词和地区发现地点并取得 POI ID |
 | `get_place_details` | 根据 POI ID 核查地点详情 |
@@ -50,6 +53,7 @@ Helper 只绑定以下公共只读 Tools 和自己的 `ask_user`：
 
 调用规则：
 
+- 三个日期时间 Tool 是本地确定性能力，不按不可信外部数据处理；
 - 普通查询 Tools 可以在同一轮并发调用；
 - `ask_user` 必须独占一轮，混用时整批 Tool Call 均不执行；
 - `web_search` 用于发现来源，`extract_web_content` 只核查少量关键 URL；

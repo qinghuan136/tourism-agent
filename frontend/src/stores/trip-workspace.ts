@@ -8,24 +8,38 @@ import {
   TripApiError,
 } from '@/api/trip'
 import {
-  MessageStreamError,
   sendStreamedMessage,
   type MessageResult,
   type MessageStreamEvent,
   type StreamedTaskResult,
   type StreamRunStatus,
 } from '@/api/message-stream'
+import { toRunIssue, type RunIssue } from '@/api/errors'
 import { useLocalSessionStore } from '@/stores/local-session'
 import type { ConversationMessage, TripBootstrap } from '@/types/trip'
 
 export type TripWorkspaceStatus = 'idle' | 'loading' | 'ready' | 'not-found' | 'failed'
 export type HistoryStatus = 'idle' | 'loading' | 'failed'
-export type ConversationRunStatus = 'idle' | 'running' | StreamRunStatus
+export type ConversationRunStatus =
+  | 'idle'
+  | 'running'
+  | 'interrupted'
+  | 'blocked'
+  | StreamRunStatus
 
 export interface LiveConversationMessage {
   role: 'user' | 'assistant'
   content: string
 }
+
+interface PendingMessageRequest {
+  userId: string
+  tripId: string
+  idempotencyId: string
+  message: string
+}
+
+export type PendingRetryMode = 'same' | 'new'
 
 export const useTripWorkspaceStore = defineStore('trip-workspace', () => {
   const bootstrap = ref<TripBootstrap | null>(null)
@@ -33,7 +47,8 @@ export const useTripWorkspaceStore = defineStore('trip-workspace', () => {
   const historyStatus = ref<HistoryStatus>('idle')
   const runStatus = ref<ConversationRunStatus>('idle')
   const runFeedback = ref<string | null>(null)
-  const runError = ref<string | null>(null)
+  const runIssue = ref<RunIssue | null>(null)
+  const pendingRequest = ref<PendingMessageRequest | null>(null)
   const candidateItinerary = ref<string | null>(null)
   const liveMessages = ref<LiveConversationMessage[]>([])
   const taskResults = ref<StreamedTaskResult[]>([])
@@ -97,24 +112,37 @@ export const useTripWorkspaceStore = defineStore('trip-workspace', () => {
   async function sendMessage(message: string): Promise<void> {
     const current = bootstrap.value
     const normalizedMessage = message.trim()
-    if (!current || status.value !== 'ready' || runStatus.value === 'running' || isCancelling.value) {
+    if (
+      !current ||
+      status.value !== 'ready' ||
+      runStatus.value === 'running' ||
+      runStatus.value === 'interrupted' ||
+      runStatus.value === 'blocked' ||
+      isCancelling.value ||
+      runIssue.value
+    ) {
       return
     }
     const userId = session.userId
     if (!userId) {
       runStatus.value = 'failed'
-      runError.value = '请先选择用户和旅行'
+      runIssue.value = localRunIssue('请先选择用户和旅行')
       return
     }
     if (!normalizedMessage || normalizedMessage.length > 4000) {
       runStatus.value = 'failed'
-      runError.value = '请输入 1 到 4000 个字符的消息'
+      runIssue.value = localRunIssue('请输入 1 到 4000 个字符的消息')
       return
     }
     if (candidateItinerary.value) return
 
     if (runStatus.value !== 'waiting_user') taskResults.value = []
-    await submitMessage(current.tripId, userId, normalizedMessage)
+    await startPendingRequest({
+      userId,
+      tripId: current.tripId,
+      idempotencyId: crypto.randomUUID(),
+      message: normalizedMessage,
+    })
   }
 
   async function confirmCandidate(accepted: boolean): Promise<void> {
@@ -130,10 +158,15 @@ export const useTripWorkspaceStore = defineStore('trip-workspace', () => {
     const userId = session.userId
     if (!userId) {
       runStatus.value = 'failed'
-      runError.value = '请先选择用户和旅行'
+      runIssue.value = localRunIssue('请先选择用户和旅行')
       return
     }
-    await submitMessage(current.tripId, userId, accepted ? '是' : '否')
+    await startPendingRequest({
+      userId,
+      tripId: current.tripId,
+      idempotencyId: crypto.randomUUID(),
+      message: accepted ? '是' : '否',
+    })
   }
 
   async function cancelRun(): Promise<void> {
@@ -142,44 +175,81 @@ export const useTripWorkspaceStore = defineStore('trip-workspace', () => {
       !current ||
       status.value !== 'ready' ||
       isCancelling.value ||
-      (runStatus.value !== 'running' && runStatus.value !== 'waiting_user')
+      (runStatus.value !== 'running' &&
+        runStatus.value !== 'waiting_user' &&
+        runStatus.value !== 'interrupted' &&
+        runStatus.value !== 'blocked')
     ) {
       return
     }
     const userId = session.userId
     if (!userId) {
-      runError.value = '请先选择用户和旅行'
+      runIssue.value = localRunIssue('请先选择用户和旅行')
       return
     }
 
     isCancelling.value = true
-    runError.value = null
+    runIssue.value = null
     try {
       const cancelled = await cancelTripRun(current.tripId, userId)
       candidateItinerary.value = null
+      pendingRequest.value = null
       runStatus.value = 'cancelled'
       runFeedback.value = cancelled ? '已取消当前任务' : '当前没有可取消的任务'
     } catch (error) {
-      runError.value = toUserFacingCancelError(error)
+      runIssue.value = toRunIssue(error)
     } finally {
       isCancelling.value = false
     }
   }
 
-  async function submitMessage(tripId: string, userId: string, message: string): Promise<void> {
-    const idempotencyId = crypto.randomUUID()
+  async function startPendingRequest(request: PendingMessageRequest): Promise<void> {
+    pendingRequest.value = request
+    await submitPendingRequest(request, true)
+  }
+
+  async function retryPendingRequest(mode: PendingRetryMode): Promise<void> {
+    const request = pendingRequest.value
+    if (!request || isCancelling.value) return
+    const nextRequest =
+      mode === 'same'
+        ? request
+        : { ...request, idempotencyId: crypto.randomUUID() }
+    pendingRequest.value = nextRequest
+    await submitPendingRequest(nextRequest, false)
+  }
+
+  function restoreCandidateConfirmation(): void {
+    if (!candidateItinerary.value || runIssue.value?.code !== 'candidate-confirmation-invalid') return
+    runIssue.value = null
+    runFeedback.value = null
+    runStatus.value = 'waiting_user'
+  }
+
+  function leaveTrip(): void {
+    resetRunState()
+    bootstrap.value = null
+    status.value = 'idle'
+  }
+
+  async function submitPendingRequest(
+    request: PendingMessageRequest,
+    appendUserMessage: boolean,
+  ): Promise<void> {
     runStatus.value = 'running'
     runFeedback.value = '正在发送请求'
-    runError.value = null
-    liveMessages.value = [...liveMessages.value, { role: 'user', content: message }]
+    runIssue.value = null
+    if (appendUserMessage) {
+      liveMessages.value = [...liveMessages.value, { role: 'user', content: request.message }]
+    }
 
     try {
       const outcome = await sendStreamedMessage(
         {
-          userId,
-          tripId,
-          idempotencyId,
-          message,
+          userId: request.userId,
+          tripId: request.tripId,
+          idempotencyId: request.idempotencyId,
+          message: request.message,
         },
         { onEvent: consumeStreamEvent },
       )
@@ -192,17 +262,44 @@ export const useTripWorkspaceStore = defineStore('trip-workspace', () => {
         applyResult(outcome.result)
         runStatus.value = 'completed'
         runFeedback.value = null
+        pendingRequest.value = null
         return
       }
       if (runStatus.value === 'running') {
         runStatus.value = outcome.status
       }
       if (outcome.status !== 'failed') runFeedback.value = null
+      if (outcome.status !== 'failed') pendingRequest.value = null
     } catch (error) {
-      runStatus.value = 'failed'
-      runError.value = toUserFacingRunError(error)
+      applyRunIssue(toRunIssue(error))
       runFeedback.value = null
     }
+  }
+
+  function applyRunIssue(issue: RunIssue): void {
+    runIssue.value = issue
+    if (issue.code === 'network' || issue.code === 'protocol') {
+      runStatus.value = 'interrupted'
+      return
+    }
+    if (issue.code === 'trip-running') {
+      pendingRequest.value = null
+      runStatus.value = 'blocked'
+      return
+    }
+    if (issue.code === 'run-cancelled') {
+      runStatus.value = 'cancelled'
+      return
+    }
+    if (issue.code === 'candidate-confirmation-invalid') {
+      pendingRequest.value = null
+      runStatus.value = 'waiting_user'
+      return
+    }
+    if (issue.code === 'trip-not-found' || issue.code === 'invalid-request') {
+      pendingRequest.value = null
+    }
+    runStatus.value = 'failed'
   }
 
   function consumeStreamEvent(event: MessageStreamEvent): void {
@@ -232,7 +329,7 @@ export const useTripWorkspaceStore = defineStore('trip-workspace', () => {
       return
     }
     if (event.type === 'error') {
-      runError.value = event.message
+      applyRunIssue({ code: 'server-failed', message: event.message, actions: ['retry-new'] })
       runFeedback.value = null
       return
     }
@@ -272,7 +369,8 @@ export const useTripWorkspaceStore = defineStore('trip-workspace', () => {
   function resetRunState(): void {
     runStatus.value = 'idle'
     runFeedback.value = null
-    runError.value = null
+    runIssue.value = null
+    pendingRequest.value = null
     candidateItinerary.value = null
     liveMessages.value = []
     taskResults.value = []
@@ -285,7 +383,7 @@ export const useTripWorkspaceStore = defineStore('trip-workspace', () => {
     historyStatus,
     runStatus,
     runFeedback,
-    runError,
+    runIssue,
     candidateItinerary,
     liveMessages,
     taskResults,
@@ -295,6 +393,9 @@ export const useTripWorkspaceStore = defineStore('trip-workspace', () => {
     sendMessage,
     confirmCandidate,
     cancelRun,
+    retryPendingRequest,
+    restoreCandidateConfirmation,
+    leaveTrip,
   }
 })
 
@@ -308,12 +409,6 @@ function mergeConversationItems(
   return [...uniqueById.values()].sort((first, second) => first.id - second.id)
 }
 
-function toUserFacingRunError(error: unknown): string {
-  if (error instanceof MessageStreamError) return error.message
-  return '消息发送失败，请重试或取消当前任务'
-}
-
-function toUserFacingCancelError(error: unknown): string {
-  if (error instanceof TripApiError) return error.message
-  return '取消当前任务失败，请重试'
+function localRunIssue(message: string): RunIssue {
+  return { code: 'invalid-request', message, actions: [] }
 }

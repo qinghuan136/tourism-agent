@@ -244,4 +244,152 @@ describe('trip workspace store', () => {
     expect(store.candidateItinerary).toBeNull()
     expect(store.runFeedback).toBe('已取消当前任务')
   })
+
+  it('reuses the original request after a network interruption without duplicating the message', async () => {
+    const idempotencyId = '33333333-3333-3333-3333-333333333333'
+    vi.stubGlobal('crypto', { randomUUID: () => idempotencyId })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            trip_id: tripId,
+            conversations: { items: [], next_before_id: null, has_more: false },
+            current_itinerary: null,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ idempotency_id: idempotencyId, status: 'processing' }),
+          { status: 202, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const store = useTripWorkspaceStore()
+    await store.load(tripId)
+    await store.sendMessage('帮我规划广州三日游')
+
+    expect(store.runStatus).toBe('interrupted')
+    expect(store.runIssue?.actions).toEqual(['retry-same', 'cancel'])
+
+    await store.retryPendingRequest('same')
+
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      body: JSON.stringify({
+        user_id: userId,
+        trip_id: tripId,
+        idempotency_id: idempotencyId,
+        message: '帮我规划广州三日游',
+      }),
+    })
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
+      body: JSON.stringify({
+        user_id: userId,
+        trip_id: tripId,
+        idempotency_id: idempotencyId,
+        message: '帮我规划广州三日游',
+      }),
+    })
+    expect(store.liveMessages).toEqual([{ role: 'user', content: '帮我规划广州三日游' }])
+    expect(store.runStatus).toBe('running')
+  })
+
+  it('generates a new idempotency key after a server failure without duplicating the message', async () => {
+    const firstIdempotencyId = '33333333-3333-3333-3333-333333333333'
+    const secondIdempotencyId = '44444444-4444-4444-8444-444444444444'
+    vi.stubGlobal('crypto', {
+      randomUUID: vi.fn().mockReturnValueOnce(firstIdempotencyId).mockReturnValueOnce(secondIdempotencyId),
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            trip_id: tripId,
+            conversations: { items: [], next_before_id: null, has_more: false },
+            current_itinerary: null,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: '消息处理失败，请稍后使用新的 idempotency_id 重试' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ idempotency_id: secondIdempotencyId, status: 'processing' }),
+          { status: 202, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const store = useTripWorkspaceStore()
+    await store.load(tripId)
+    await store.sendMessage('帮我规划广州三日游')
+    await store.retryPendingRequest('new')
+
+    expect(store.runIssue).toBeNull()
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
+      body: expect.stringContaining(secondIdempotencyId),
+    })
+    expect(store.liveMessages).toEqual([{ role: 'user', content: '帮我规划广州三日游' }])
+  })
+
+  it('restores candidate confirmation after the server rejects a confirmation reply', async () => {
+    const firstIdempotencyId = '33333333-3333-3333-3333-333333333333'
+    const confirmationIdempotencyId = '44444444-4444-4444-8444-444444444444'
+    vi.stubGlobal('crypto', {
+      randomUUID: vi.fn().mockReturnValueOnce(firstIdempotencyId).mockReturnValueOnce(confirmationIdempotencyId),
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              trip_id: tripId,
+              conversations: { items: [], next_before_id: null, has_more: false },
+              current_itinerary: null,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            [
+              `event: interaction.required\ndata: {"sequence":1,"idempotency_id":"${firstIdempotencyId}","timestamp":"2026-09-02T12:00:00+00:00","kind":"candidate_confirmation","question":"是否采用这份候选行程？","allowed_answers":["是","否"],"candidate_itinerary":"第 1 天：沙面"}\n\n`,
+              `event: run.completed\ndata: {"sequence":2,"idempotency_id":"${firstIdempotencyId}","timestamp":"2026-09-02T12:00:01+00:00","status":"waiting_user"}\n\n`,
+            ].join(''),
+            { headers: { 'Content-Type': 'text/event-stream' } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ detail: '候选方案确认只接受“是”或“否”' }), {
+            status: 422,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+    )
+
+    const store = useTripWorkspaceStore()
+    await store.load(tripId)
+    await store.sendMessage('帮我规划广州三日游')
+    await store.confirmCandidate(true)
+
+    expect(store.runStatus).toBe('waiting_user')
+    expect(store.runIssue?.code).toBe('candidate-confirmation-invalid')
+    expect(store.candidateItinerary).toBe('第 1 天：沙面')
+
+    store.restoreCandidateConfirmation()
+
+    expect(store.runIssue).toBeNull()
+  })
 })

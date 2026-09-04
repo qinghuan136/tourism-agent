@@ -26,6 +26,7 @@ from tourism_agent.graph.history import (
     format_related_history,
     load_related_history,
 )
+from tourism_agent.graph.itinerary_status import format_itinerary_commitment_status
 from tourism_agent.graph.messages import conversation_to_messages
 from tourism_agent.graph.subgraphs.explore.state import ExploreState
 from tourism_agent.graph.subgraphs.explore.tools import create_explore_tools
@@ -39,7 +40,11 @@ EXPLORE_SYSTEM_PROMPT = """
 你的目标是根据用户当前方向筛选目的地、地点、活动或旅行风格，解释推荐理由、主要差异和取舍。
 不要生成或修改完整旅行行程，不要声称已经保存偏好、修改行程、完成预订或执行其他业务写入。
 
-你可以调用以下只读查询 Tool：get_weather 查询中国大陆天气；search_places 发现地点并取得 POI ID；
+涉及“今天”“几天后”等相对时间时，先用 get_current_datetime 获取中国标准时间；用
+calculate_date 计算日期偏移；用 calculate_trip_duration 计算含首尾日期的旅行天数和住宿晚数。
+这些日期时间 Tool 是本地确定性能力，不依赖网络。
+
+你可以调用以下只读外部查询 Tool：get_weather 查询中国大陆天气；search_places 发现地点并取得 POI ID；
 get_place_details 根据 POI ID 核查地点详情；search_nearby_places 搜索指定中心附近的地点；
 web_search 搜索开放网页信息；extract_web_content 提取少量已选网页正文；measure_travel_distance
 批量比较候选地点到同一目的地的距离和预计耗时。距离 Tool 只用于候选比较，不负责输出详细路线。
@@ -116,6 +121,7 @@ def build_system_prompt(state: ExploreState) -> str:
     related_history = format_related_history(state.get("retrieved_history", []))
     prompt = (
         f"{EXPLORE_SYSTEM_PROMPT}\n\n"
+        f"{format_itinerary_commitment_status(state.get('itinerary_committed_this_request', False))}\n\n"
         f"当前日期：{datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()}\n"
         f"【只读业务上下文】\n{json.dumps(context, ensure_ascii=False)}"
     )

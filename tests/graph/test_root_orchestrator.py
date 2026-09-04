@@ -62,11 +62,13 @@ class ScriptedOrchestratorModel:
     ) -> None:
         self.tasks = tasks
         self.reviews = list(reviews or [])
+        self.plan_messages: list[list[BaseMessage]] = []
 
     def with_structured_output(self, schema: type[BaseModel]) -> RunnableLambda:
         if schema is OrchestrationPlan:
-            return RunnableLambda(
-                lambda _messages: schema(
+            def plan(messages: list[BaseMessage]) -> OrchestrationPlan:
+                self.plan_messages.append(messages)
+                return schema(
                     goal="完成复合旅行请求",
                     tasks=[
                         TaskSpec(
@@ -77,7 +79,8 @@ class ScriptedOrchestratorModel:
                         for index, task_type in enumerate(self.tasks, start=1)
                     ],
                 )
-            )
+
+            return RunnableLambda(plan)
 
         def review(_messages: list[BaseMessage]) -> PlanReviewDecision:
             if self.reviews:
@@ -105,11 +108,13 @@ class RecordingSubgraph:
         calls: list[str],
         inputs: dict[str, str],
         result_text: str | None = None,
+        itinerary_committed_this_request: bool = False,
     ) -> None:
         self.name = name
         self.calls = calls
         self.inputs = inputs
         self.result_text = result_text
+        self.itinerary_committed_this_request = itinerary_committed_this_request
 
     async def ainvoke(self, payload: dict[str, object], **_kwargs: object) -> dict:
         self.calls.append(self.name)
@@ -123,10 +128,14 @@ class RecordingSubgraph:
         self.inputs[f"{self.name}_retrieval_task_goal"] = str(
             payload["retrieval_task_goal"]
         )
+        self.inputs[f"{self.name}_itinerary_committed"] = str(
+            payload.get("itinerary_committed_this_request")
+        )
         return {
             "assistant_message": self.result_text or f"{self.name} result：沙面",
             "candidate_itinerary": None,
             "current_itinerary": None,
+            "itinerary_committed_this_request": self.itinerary_committed_this_request,
         }
 
 
@@ -285,6 +294,148 @@ def test_subgraph_receives_orchestrator_handoff_instead_of_raw_task_result(
     assert "RAW_TASK_RESULT_SENTINEL" not in research_query
     assert inputs["research_retrieval_user_input"] == ROOT_INPUT["user_input"]
     assert inputs["research_retrieval_task_goal"] == "执行 research 子任务"
+
+
+def test_root_propagates_confirmed_itinerary_write_status_to_later_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """若根图遗漏真实写入状态，后续子图会把未写入与已写入混为一谈。"""
+    module = import_module("tourism_agent.graph.root")
+    calls: list[str] = []
+    inputs: dict[str, str] = {}
+    monkeypatch.setattr(
+        module,
+        "build_planning_graph",
+        lambda *_args, **_kwargs: RecordingSubgraph(
+            "planning",
+            calls,
+            inputs,
+            itinerary_committed_this_request=True,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "build_helper_graph",
+        lambda *_args, **_kwargs: RecordingSubgraph("helper", calls, inputs),
+    )
+    for name in ("explore", "research"):
+        monkeypatch.setattr(
+            module,
+            f"build_{name}_graph",
+            lambda *_args, _name=name, **_kwargs: RecordingSubgraph(
+                _name, calls, inputs
+            ),
+        )
+    graph = module.build_root_graph(
+        ScriptedOrchestratorModel(
+            [TaskType.PLANNING, TaskType.HELPER],
+            reviews=[
+                PlanReviewDecision(
+                    action="continue",
+                    reason="行程已写入，继续处理辅助问题",
+                    handoff_context="已完成行程写入。",
+                ),
+                PlanReviewDecision(action="finish", reason="请求完成"),
+            ],
+        ),
+        RoutingContextRepository(),
+    )
+
+    result = asyncio.run(graph.ainvoke(ROOT_INPUT, ROOT_CONFIG))
+
+    assert inputs["planning_itinerary_committed"] == "False"
+    assert inputs["helper_itinerary_committed"] == "True"
+    assert result["itinerary_committed_this_request"] is True
+
+
+def test_root_resets_itinerary_write_status_before_planner_on_new_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一 thread 的上一轮写入状态不能泄漏到下一轮 Planner。"""
+    module = import_module("tourism_agent.graph.root")
+    calls: list[str] = []
+    inputs: dict[str, str] = {}
+    monkeypatch.setattr(
+        module,
+        "build_planning_graph",
+        lambda *_args, **_kwargs: RecordingSubgraph(
+            "planning",
+            calls,
+            inputs,
+            itinerary_committed_this_request=True,
+        ),
+    )
+    for name in ("explore", "research", "helper"):
+        monkeypatch.setattr(
+            module,
+            f"build_{name}_graph",
+            lambda *_args, _name=name, **_kwargs: RecordingSubgraph(
+                _name, calls, inputs
+            ),
+        )
+    model = ScriptedOrchestratorModel([TaskType.PLANNING])
+    graph = module.build_root_graph(model, RoutingContextRepository())
+
+    asyncio.run(graph.ainvoke(ROOT_INPUT, ROOT_CONFIG))
+    asyncio.run(
+        graph.ainvoke(
+            {**ROOT_INPUT, "user_input": "重新安排第二天"},
+            ROOT_CONFIG,
+        )
+    )
+
+    assert len(model.plan_messages) == 2
+
+
+def test_root_ignores_forged_write_status_from_read_only_subgraph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """只读子图即使错误返回 True，也不能改变根图的真实写入状态。"""
+    module = import_module("tourism_agent.graph.root")
+    calls: list[str] = []
+    inputs: dict[str, str] = {}
+    monkeypatch.setattr(
+        module,
+        "build_explore_graph",
+        lambda *_args, **_kwargs: RecordingSubgraph(
+            "explore",
+            calls,
+            inputs,
+            itinerary_committed_this_request=True,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "build_helper_graph",
+        lambda *_args, **_kwargs: RecordingSubgraph("helper", calls, inputs),
+    )
+    for name in ("planning", "research"):
+        monkeypatch.setattr(
+            module,
+            f"build_{name}_graph",
+            lambda *_args, _name=name, **_kwargs: RecordingSubgraph(
+                _name, calls, inputs
+            ),
+        )
+    graph = module.build_root_graph(
+        ScriptedOrchestratorModel(
+            [TaskType.EXPLORE, TaskType.HELPER],
+            reviews=[
+                PlanReviewDecision(
+                    action="continue",
+                    reason="继续处理辅助问题",
+                    handoff_context="Explore 已提供候选。",
+                ),
+                PlanReviewDecision(action="finish", reason="请求完成"),
+            ],
+        ),
+        RoutingContextRepository(),
+    )
+
+    result = asyncio.run(graph.ainvoke(ROOT_INPUT, ROOT_CONFIG))
+
+    assert inputs["helper_itinerary_committed"] == "False"
+    assert result["itinerary_committed_this_request"] is False
 
 
 def test_review_finish_skips_research_and_planning(

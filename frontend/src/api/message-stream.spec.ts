@@ -82,6 +82,22 @@ describe('sendStreamedMessage', () => {
     await expect(sendStreamedMessage(request)).resolves.toEqual({ kind: 'processing' })
   })
 
+  it('exposes a current-run conflict as a deterministic error code', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: '当前旅行正在处理中，请先取消' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    await expect(sendStreamedMessage(request)).rejects.toMatchObject({
+      code: 'trip-running',
+    })
+  })
+
   it('rejects a stream closed before its terminal event', async () => {
     vi.stubGlobal(
       'fetch',

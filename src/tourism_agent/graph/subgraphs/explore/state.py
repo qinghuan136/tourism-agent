@@ -24,4 +24,5 @@ class ExploreState(TypedDict):
     retrieved_history: NotRequired[list[ConversationChunkMatch]]
     trip_context: NotRequired[dict[str, Any]]
     current_itinerary: NotRequired[str | None]
+    itinerary_committed_this_request: NotRequired[bool]
     assistant_message: NotRequired[str]

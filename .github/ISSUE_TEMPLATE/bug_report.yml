@@ -1,0 +1,28 @@
+name: 缺陷报告
+description: 报告可以稳定复现的问题
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: 问题描述
+      description: 请清楚说明实际行为和预期行为。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 启动……
+        2. 发送……
+        3. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 日志或截图
+      description: 请移除 API Key、数据库密码和其他敏感信息。
+  - type: input
+    attributes:
+      label: 运行环境
+      placeholder: Windows 11 / Python 3.12 / Node 20

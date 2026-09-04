@@ -8,6 +8,7 @@ from typing import cast
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from tourism_agent.graph.itinerary_status import format_itinerary_commitment_status
 from tourism_agent.graph.messages import conversation_to_messages
 from tourism_agent.graph.state import RootState
 from tourism_agent.models.orchestration import OrchestrationPlan, PlanReviewDecision
@@ -18,14 +19,24 @@ ORCHESTRATOR_PLAN_PROMPT = """
 你是旅行 Agent 根图中的 Orchestrator Planner，只负责为当前请求生成结构化任务计划。
 
 你不能回答用户、不能调用 Tool，也不能生成完整行程。根据【历史消息】理解指代，但只能处理最后一条
-【当前消息】。返回的 goal 概括本轮目标；tasks 应按需要列出 1～5 个独立、可执行且按顺序执行的任务。
-每个任务必须使用允许的 task_type，instruction 必须清晰描述对应模块要完成的工作。
+【当前消息】。返回的 goal 概括本轮目标；每个任务必须使用允许的 task_type，instruction 必须清晰描述
+对应模块要完成的工作。
+
+计划必须遵循“最小必要编排”原则：默认只生成 1 个 Task。一个子图能够通过自身 ReAct 和已绑定的
+Tools 完成请求时，就只交给该子图，不要把查询、比较、分析和行程修改机械拆给不同模块。多 Task 只在
+后续任务确实必须消费前序任务产物、且单一子图无法合理完成整个目标时使用；即使拆分，也只保留必要的
+2～3 个任务。绝不能为了依次调用 Explore、Research、Planning，或为了展示编排能力而拆分计划。
 
 planning、explore、research、helper 的职责边界如下：
 - planning：生成、调整或确认具体行程安排；
 - explore：发现、推荐或比较目的地、地点、活动和旅行风格；
 - research：围绕明确旅行对象进行深入调查、核实来源或分析风险；
 - helper：处理轻量对话、已有信息解释或局部公开事实查询。
+
+模块选择时，Planning 可以自行查询地点、天气、路线和网页信息后生成或修改行程；因此“找候选并加入
+行程”“核实行程中的某项安排并调整”等请求通常只需要 Planning。Explore 用于用户只想开放式发现、推荐
+或比较候选项；Research 仅用于用户明确要求深度调查、多来源核实或风险分析；Helper 用于轻量对话和
+局部简单查询。不要把普通搜索、一次地点核实或简单比较误判为需要 Research。
 
 这些任务会由领域模块执行，因此不要把未经执行的事实、推荐或行程写成结论。
 """.strip()
@@ -69,7 +80,12 @@ def create_plan_node(model: BaseChatModel) -> OrchestratorNode:
             OrchestrationPlan,
             await planner.ainvoke(
                 [
-                    SystemMessage(content=ORCHESTRATOR_PLAN_PROMPT),
+                    SystemMessage(
+                        content=(
+                            f"{ORCHESTRATOR_PLAN_PROMPT}\n\n"
+                            f"{format_itinerary_commitment_status(state.get('itinerary_committed_this_request', False))}"
+                        )
+                    ),
                     *history,
                     HumanMessage(content=f"【当前消息】\n{state['user_input']}"),
                 ]
@@ -110,12 +126,20 @@ def create_review_node(model: BaseChatModel) -> OrchestratorNode:
             "remaining_tasks": [
                 task.model_dump(mode="json") for task in state.get("pending_tasks", [])
             ],
+            "itinerary_committed_this_request": state.get(
+                "itinerary_committed_this_request", False
+            ),
         }
         decision = cast(
             PlanReviewDecision,
             await reviewer.ainvoke(
                 [
-                    SystemMessage(content=ORCHESTRATOR_REVIEW_PROMPT),
+                    SystemMessage(
+                        content=(
+                            f"{ORCHESTRATOR_REVIEW_PROMPT}\n\n"
+                            f"{format_itinerary_commitment_status(state.get('itinerary_committed_this_request', False))}"
+                        )
+                    ),
                     HumanMessage(
                         content=(
                             "【任务复核上下文】\n"
@@ -149,12 +173,20 @@ def create_finalize_node(model: BaseChatModel) -> OrchestratorNode:
             "task_results": [
                 result.model_dump(mode="json") for result in state.get("task_results", [])
             ],
+            "itinerary_committed_this_request": state.get(
+                "itinerary_committed_this_request", False
+            ),
         }
         response = cast(
             AIMessage,
             await finalizer.ainvoke(
                 [
-                    SystemMessage(content=ORCHESTRATOR_FINALIZE_PROMPT),
+                    SystemMessage(
+                        content=(
+                            f"{ORCHESTRATOR_FINALIZE_PROMPT}\n\n"
+                            f"{format_itinerary_commitment_status(state.get('itinerary_committed_this_request', False))}"
+                        )
+                    ),
                     HumanMessage(
                         content=(
                             "【最终回复上下文】\n"

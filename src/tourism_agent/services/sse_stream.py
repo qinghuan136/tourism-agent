@@ -54,6 +54,9 @@ class SseEventSink:
 
 
 TOOL_PROGRESS_MESSAGES = {
+    "get_current_datetime": "正在确认当前时间",
+    "calculate_date": "正在计算日期",
+    "calculate_trip_duration": "正在计算旅行天数",
     "get_weather": "正在查询天气",
     "search_places": "正在搜索相关地点",
     "search_nearby_places": "正在搜索附近地点",

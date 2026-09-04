@@ -69,6 +69,31 @@ def test_tool_lifecycle_is_mapped_without_raw_arguments_or_result() -> None:
     ]
 
 
+def test_date_time_tool_is_mapped_to_public_progress() -> None:
+    """本地日期时间 Tool 也应提供前端可见的简短进度。"""
+    translator = GraphEventTranslator()
+
+    events = translator.translate(
+        {
+            "event": "on_tool_start",
+            "name": "get_current_datetime",
+            "run_id": "date-time-run-1",
+            "data": {"input": {}},
+        }
+    )
+
+    assert events == [
+        SseEvent(
+            event="operation.started",
+            data={
+                "operation_id": "date-time-run-1",
+                "tool": "get_current_datetime",
+                "message": "正在确认当前时间",
+            },
+        )
+    ]
+
+
 def test_only_outer_module_node_is_mapped_to_task_progress() -> None:
     """编排内部节点和子图内部节点不能制造重复的前端任务进度。"""
     translator = GraphEventTranslator()

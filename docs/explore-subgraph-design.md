@@ -43,6 +43,9 @@ Explore 当前不负责：
 
 | Tool | 底层能力 | 职责 |
 |---|---|---|
+| `get_current_datetime` | 本地系统时间 | 返回中国标准时间下的当前日期、时间和星期 |
+| `calculate_date` | 本地确定性计算 | 计算绝对日期的天数偏移 |
+| `calculate_trip_duration` | 本地确定性计算 | 计算旅行自然日数和住宿晚数 |
 | `get_weather` | QWeather Web API | 查询中国大陆地点指定时间段的天气 |
 | `search_places` | 高德 Places | 根据关键词和地区发现 POI，并返回 POI ID |
 | `get_place_details` | 高德 Places | 根据明确的 POI ID 查询地点详情 |
@@ -53,6 +56,8 @@ Explore 当前不负责：
 | `measure_travel_distance` | 高德 Distance Web API | 批量比较多个起点到同一目的地的距离和预计耗时 |
 | `map_web_site` | Tavily MCP `tavily_map` | 发现单一网站的页面结构 |
 | `crawl_web_site` | Tavily MCP `tavily_crawl` | 抓取单一网站中少量相关页面 |
+
+日期时间 Tool 不访问网络，也不属于不可信外部数据。它们用于把相对时间换算为绝对日期，以及完成跨月日期和旅行天数计算。
 
 公共 Tool 对 Agent 暴露项目内稳定名称，不直接暴露供应商 Tool。供应商调用、有限网络重试、
 响应解析和连接生命周期由公共 Provider Client 负责；Tool 层负责稳定参数、调用日志、结果裁剪

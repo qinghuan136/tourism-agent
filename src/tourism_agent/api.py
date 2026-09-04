@@ -20,6 +20,7 @@ from tourism_agent.graph.root import build_root_graph
 from tourism_agent.graph.tools.conversation_history import (
     create_conversation_history_tools,
 )
+from tourism_agent.graph.tools.date_time import create_date_time_tools
 from tourism_agent.graph.tools.travel_query import create_query_tools
 from tourism_agent.infrastructure.database import DatabaseSettings, PostgresDatabase
 from tourism_agent.infrastructure.logging_config import (
@@ -169,7 +170,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             )
             retrieval_service = get_conversation_retrieval_service()
             history_tools = create_conversation_history_tools(retrieval_service)
-            shared_query_tools = [*public_query_tools, *history_tools]
+            date_time_tools = create_date_time_tools()
+            shared_query_tools = [
+                *public_query_tools,
+                *date_time_tools,
+                *history_tools,
+            ]
             # 根图、MCP 会话与 HTTP 客户端均由单一启动协程创建并在进程内复用。
             _app.state.root_graph = build_root_graph(
                 create_chat_model(),

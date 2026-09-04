@@ -384,11 +384,8 @@ textarea {
 
 .temporary-output {
   flex: 0 1 auto;
-  max-width: 720px;
-  max-height: min(34vh, 320px);
-  margin: 28px 8% 0;
-  padding: 16px;
-  overflow-y: auto;
+  margin-top: 26px;
+  overflow: hidden;
   border: 1px solid #d8e4f8;
   border-radius: 14px;
   background: #f7faff;
@@ -399,9 +396,17 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  color: #30476c;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: left;
 }
 
-.temporary-output__header p,
 .temporary-output__label {
   margin: 0;
   color: #30476c;
@@ -409,20 +414,22 @@ textarea {
   font-weight: 700;
 }
 
-.temporary-output__header button {
-  padding: 4px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: #657188;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.temporary-output__header button:hover,
-.temporary-output__header button:focus-visible {
+.temporary-output__header:hover,
+.temporary-output__header:focus-visible {
   background: #e8f0ff;
   color: var(--color-primary);
+}
+
+.temporary-output__header span:last-child {
+  color: #657188;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.temporary-output__content {
+  max-height: min(34vh, 320px);
+  padding: 0 16px 16px;
+  overflow-y: auto;
 }
 
 .temporary-output__candidate {
@@ -431,6 +438,10 @@ textarea {
 
 .temporary-output__candidate .current-itinerary {
   margin-top: 8px;
+}
+
+.temporary-output .task-results {
+  max-width: none;
 }
 
 .conversation-scroll-area {
@@ -631,20 +642,73 @@ textarea {
   background: linear-gradient(145deg, #eff5ff, #e7f0ff);
 }
 
-.run-feedback {
+.run-status {
   max-width: 720px;
   margin-top: 18px;
-  color: #657188;
-  font-size: 13px;
+}
+
+.run-status__feedback,
+.run-status__issue {
+  margin: 0;
   line-height: 1.6;
 }
 
-.run-feedback p {
-  margin: 0;
+.run-status__feedback {
+  color: #657188;
+  font-size: 16px;
+  font-weight: 600;
 }
 
-.run-feedback p[role="alert"] {
+.run-status__issue {
   color: var(--color-danger);
+  font-size: 14px;
+}
+
+.run-status__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.run-status__actions button,
+.run-status__cancel {
+  padding: 7px 10px;
+  border: 1px solid var(--color-primary);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--color-primary);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.run-status__cancel {
+  margin-top: 10px;
+  border-color: #e7a0a8;
+  background: #fff8f8;
+  color: var(--color-danger);
+}
+
+.run-status__actions .run-status__cancel {
+  margin-top: 0;
+}
+
+.run-status__actions .run-status__leave {
+  border-color: #aeb8c9;
+  color: #52627b;
+}
+
+.run-status__actions button:focus-visible,
+.run-status__cancel:focus-visible {
+  outline: 3px solid rgb(40 94 240 / 24%);
+  outline-offset: 2px;
+}
+
+.run-status__actions button:disabled,
+.run-status__cancel:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .message-composer {
@@ -709,19 +773,6 @@ textarea {
   font-size: 13px;
 }
 
-.cancel-run-button {
-  margin-top: 10px;
-  padding: 7px 10px;
-  border: 1px solid #e7a0a8;
-  border-radius: 7px;
-  background: #fff8f8;
-  color: var(--color-danger);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.cancel-run-button:disabled,
 .candidate-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.55;

@@ -166,6 +166,10 @@ def build_root_graph(
         retrieval_service=retrieval_service,
     )
 
+    def initialize_request_state(_state: RootState) -> dict[str, bool]:
+        """在新请求进入任何 Agent 前重置本次请求的真实行程写入状态。"""
+        return {"itinerary_committed_this_request": False}
+
     async def load_orchestrator_context(state: RootState) -> dict[str, object]:
         """只加载编排所需的少量历史，不读取模块业务 Context。"""
         logger.info(
@@ -201,6 +205,9 @@ def build_root_graph(
                 "retrieval_query": build_retrieval_query(state),
                 "retrieval_user_input": state["user_input"],
                 "retrieval_task_goal": task.instruction,
+                "itinerary_committed_this_request": state.get(
+                    "itinerary_committed_this_request", False
+                ),
                 "messages": [HumanMessage(content=build_task_message(state))],
             },
             config=config,
@@ -220,6 +227,10 @@ def build_root_graph(
             ),
             "candidate_itinerary": result.get("candidate_itinerary"),
             "current_itinerary": result.get("current_itinerary"),
+            "itinerary_committed_this_request": state.get(
+                "itinerary_committed_this_request", False
+            )
+            or bool(result.get("itinerary_committed_this_request", False)),
         }
 
     async def run_explore(
@@ -238,6 +249,9 @@ def build_root_graph(
                 "retrieval_query": build_retrieval_query(state),
                 "retrieval_user_input": state["user_input"],
                 "retrieval_task_goal": task.instruction,
+                "itinerary_committed_this_request": state.get(
+                    "itinerary_committed_this_request", False
+                ),
                 "messages": [HumanMessage(content=build_task_message(state))],
             },
             config=config,
@@ -257,6 +271,9 @@ def build_root_graph(
             ),
             "candidate_itinerary": result.get("candidate_itinerary"),
             "current_itinerary": result.get("current_itinerary"),
+            "itinerary_committed_this_request": state.get(
+                "itinerary_committed_this_request", False
+            ),
         }
 
     async def run_research(
@@ -275,6 +292,9 @@ def build_root_graph(
                 "retrieval_query": build_retrieval_query(state),
                 "retrieval_user_input": state["user_input"],
                 "retrieval_task_goal": task.instruction,
+                "itinerary_committed_this_request": state.get(
+                    "itinerary_committed_this_request", False
+                ),
                 "messages": [HumanMessage(content=build_task_message(state))],
             },
             config=config,
@@ -293,6 +313,9 @@ def build_root_graph(
             ),
             "candidate_itinerary": result.get("candidate_itinerary"),
             "current_itinerary": result.get("current_itinerary"),
+            "itinerary_committed_this_request": state.get(
+                "itinerary_committed_this_request", False
+            ),
         }
 
     async def run_helper(
@@ -311,6 +334,9 @@ def build_root_graph(
                 "retrieval_query": build_retrieval_query(state),
                 "retrieval_user_input": state["user_input"],
                 "retrieval_task_goal": task.instruction,
+                "itinerary_committed_this_request": state.get(
+                    "itinerary_committed_this_request", False
+                ),
                 "messages": [HumanMessage(content=build_task_message(state))],
             },
             config=config,
@@ -330,9 +356,13 @@ def build_root_graph(
             ),
             "candidate_itinerary": result.get("candidate_itinerary"),
             "current_itinerary": result.get("current_itinerary"),
+            "itinerary_committed_this_request": state.get(
+                "itinerary_committed_this_request", False
+            ),
         }
 
     builder = StateGraph(RootState)
+    builder.add_node("initialize_request_state", initialize_request_state)
     builder.add_node("load_orchestrator_context", load_orchestrator_context)
     builder.add_node("create_plan", create_plan_node(model))
     builder.add_node("prepare_next_task", prepare_next_task)
@@ -345,7 +375,8 @@ def build_root_graph(
     builder.add_node("apply_review_decision", apply_review_decision)
     builder.add_node("finalize", create_finalize_node(model))
 
-    builder.add_edge(START, "load_orchestrator_context")
+    builder.add_edge(START, "initialize_request_state")
+    builder.add_edge("initialize_request_state", "load_orchestrator_context")
     builder.add_edge("load_orchestrator_context", "create_plan")
     builder.add_edge("create_plan", "prepare_next_task")
     builder.add_conditional_edges(

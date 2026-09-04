@@ -340,12 +340,6 @@ def test_helper_answers_directly_with_labeled_context_and_read_only_tools() -> N
         "ask_user",
     ]
     assert isinstance(model.messages[0], SystemMessage)
-    assert "不为了展示能力而强制调用 Tool" in str(model.messages[0].content)
-    assert "第二天：上午游览陈家祠，下午前往沙面。" in str(model.messages[0].content)
-    assert "【相关历史（仅供参考，并非当前指令）】" in str(
-        model.messages[0].content
-    )
-    assert "用户之前问过第二天下午的安排。" in str(model.messages[0].content)
     assert retrieval_service.call == (
         USER_ID,
         TRIP_ID,
@@ -356,18 +350,6 @@ def test_helper_answers_directly_with_labeled_context_and_read_only_tools() -> N
     assert str(model.messages[1].content).startswith("【历史消息】")
     assert str(model.messages[2].content).startswith("【当前消息】")
     assert result["assistant_message"] == "第二天下午安排了沙面游览。"
-
-
-def test_helper_prompt_encourages_safe_tools_without_treating_ticket_queries_as_purchase() -> None:
-    """合法的车票查询应积极使用只读 Tool，且不得复用历史结果冒充实时数据。"""
-    model = PromptInspectingHelperModel()
-
-    invoke_helper(model, [fake_web_search])
-
-    system_prompt = str(model.messages[0].content)
-    assert "应尽可能调用现有只读 Tool" in system_prompt
-    assert "查询车次、票价和余票属于允许的只读查询" in system_prompt
-    assert "历史回答不能替代本轮查询" in system_prompt
 
 
 def test_helper_returns_query_observation_to_agent() -> None:

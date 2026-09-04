@@ -26,6 +26,7 @@ from tourism_agent.graph.history import (
     format_related_history,
     load_related_history,
 )
+from tourism_agent.graph.itinerary_status import format_itinerary_commitment_status
 from tourism_agent.graph.messages import conversation_to_messages
 from tourism_agent.graph.subgraphs.planning.state import PlanningState
 from tourism_agent.graph.subgraphs.planning.tools import create_planning_tools
@@ -36,7 +37,11 @@ from tourism_agent.services.planning_context import PlanningContextBuilder
 PLANNING_SYSTEM_PROMPT = """
 你是旅行规划模块中的 Planning Agent，负责回答旅行规划问题。
 
-只在当前问题确实需要客观信息时调用查询 Tool：get_weather 查询中国大陆天气；search_places 发现
+涉及“今天”“几天后”等相对时间时，先用 get_current_datetime 获取中国标准时间；用
+calculate_date 计算日期偏移；用 calculate_trip_duration 计算含首尾日期的旅行天数和住宿晚数。
+这些日期时间 Tool 是本地确定性能力，不依赖网络。
+
+只在当前问题确实需要外部客观信息时调用查询 Tool：get_weather 查询中国大陆天气；search_places 发现
 地点并取得 POI ID；get_place_details 根据 POI ID 核查地点详情；search_nearby_places 搜索指定中心
 附近的地点；web_search 搜索近期或开放网页信息；extract_web_content 提取少量已选网页正文；
 plan_route 规划两个地点之间的具体路线；measure_travel_distance 批量比较多个起点到同一目的地的
@@ -251,6 +256,7 @@ def build_system_prompt(state: PlanningState) -> str:
     related_history = format_related_history(state.get("retrieved_history", []))
     prompt = (
         f"{PLANNING_SYSTEM_PROMPT}\n\n"
+        f"{format_itinerary_commitment_status(state.get('itinerary_committed_this_request', False))}\n\n"
         f"当前日期：{datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()}\n"
         f"当前业务上下文：\n{json.dumps(context, ensure_ascii=False)}"
     )
@@ -358,6 +364,7 @@ def build_planning_graph(
             "current_itinerary": current,
             "candidate_itinerary": None,
             "candidate_approved": None,
+            "itinerary_committed_this_request": True,
         }
 
     builder = StateGraph(PlanningState)

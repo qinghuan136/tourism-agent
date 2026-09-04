@@ -301,6 +301,9 @@ Tool 返回给 Agent 的数据必须在边界处完成筛选、规范化和压�
 
 | Tool | 输入 | 数据源 | 职责 |
 |---|---|---|---|
+| `get_current_datetime` | 无 | 本地系统时间 | 返回中国标准时间下的当前日期、时间和星期 |
+| `calculate_date` | `base_date: str, offset_days: int` | 本地确定性计算 | 计算某个绝对日期前后若干天的日期和星期 |
+| `calculate_trip_duration` | `start_date: str, end_date: str` | 本地确定性计算 | 计算含首尾日期的旅行天数和住宿晚数 |
 | `get_weather` | `location: str, time_range: str, region: str = ""` | QWeather Web API | 地理编码后查询目标时间段天气；region 用于缩小行政区范围 |
 | `search_places` | `query: str, region: str = ""` | 高德 Places Web API | 发现中国大陆 POI 并取得 POI ID；region 用于提高结果相关性 |
 | `get_place_details` | `place_id: str` | 高德 Places Web API | 根据 POI ID 核查地点详情 |
@@ -309,6 +312,8 @@ Tool 返回给 Agent 的数据必须在边界处完成筛选、规范化和压�
 | `extract_web_content` | `urls: list[str], focus: str = ""` | Tavily MCP | 提取少量已选网页正文，核查关键规则或事实 |
 | `plan_route` | `origin: str, destination: str, mode: str, ...` | 高德 Direction Web API | 核查两个地点之间的具体路线 |
 | `measure_travel_distance` | `origins: list[str], destination: str, mode: str = "driving", region: str = ""` | 高德 Distance Web API | 批量比较候选起点到同一目的地的距离和预计耗时 |
+
+三个日期时间 Tool 不访问外部服务，也不添加“不可信外部数据”标记。涉及相对时间、跨月日期或行程天数时，Agent 应优先调用它们完成确定性换算，再把绝对日期传给天气等外部 Tool。
 
 `get_weather` 使用 QWeather GeoAPI 把地点名解析为 Location ID，再选择能够覆盖目标日期的预报范围并筛选结果。`time_range` 优先使用绝对日期；超出供应商可预报范围时必须明确说明，不能生成伪精确预报。GeoAPI 返回多个候选地点时采用供应商排名第一的结果，并在 Observation 中明确实际解析到的行政区；Agent 可以结合结果决定是否带更具体的 `region` 重新查询或询问用户。
 

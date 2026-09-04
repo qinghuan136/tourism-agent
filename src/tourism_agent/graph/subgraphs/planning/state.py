@@ -27,4 +27,6 @@ class PlanningState(TypedDict):
     candidate_itinerary: NotRequired[str | None]
     candidate_approved: NotRequired[bool | None]
     consecutive_candidate_rejections: NotRequired[int]
+    # 由根图传入；正式写库成功后在当前请求内保持为 True。
+    itinerary_committed_this_request: NotRequired[bool]
     assistant_message: NotRequired[str]
