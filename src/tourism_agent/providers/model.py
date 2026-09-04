@@ -28,7 +28,7 @@ class ModelSettings(BaseSettings):
         validation_alias="TOURISM_AGENT_RERANK_URL",
     )
     rerank_score_threshold: float = Field(
-        default=0.0,
+        default=0.81,
         ge=0.0,
         le=1.0,
         validation_alias="RAG_RERANK_SCORE_THRESHOLD",

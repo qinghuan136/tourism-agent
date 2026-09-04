@@ -1,0 +1,371 @@
+[
+  {
+    "id": 1,
+    "exchange_id": "61484711-4c79-4b77-aeba-3fc468181f01",
+    "user_message_id": 1,
+    "assistant_message_id": 2,
+    "retrieval_text_sha256": "147f8584b29a440f40aa926211c5a9a3af141ee06b146bef4f5d5e4d2b581cf6",
+    "created_at": "2026-09-03T11:36:17.953670+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 2,
+    "exchange_id": "19c4f71a-3568-4317-b921-92c3713b1e9e",
+    "user_message_id": 3,
+    "assistant_message_id": 4,
+    "retrieval_text_sha256": "7e29d02fad8dcd32cc642fe2e818e2316e37f8f8a30d9a7c667b5778546594b1",
+    "created_at": "2026-09-03T11:38:19.629319+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 3,
+    "exchange_id": "caa3a7dc-98d6-42aa-bb77-be39a1d15048",
+    "user_message_id": 5,
+    "assistant_message_id": 6,
+    "retrieval_text_sha256": "636d50ea8fe896a837b7421d5fe79b5ce0f47e3f2f84e5a2dd045125373f4bad",
+    "created_at": "2026-09-03T11:39:41.107939+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 4,
+    "exchange_id": "a94d007c-5456-4e16-ae30-7ffc076c6eee",
+    "user_message_id": 7,
+    "assistant_message_id": 8,
+    "retrieval_text_sha256": "d02fab2012e54598a877e1cb00d173997be076cc38cf5069a1541175114a3157",
+    "created_at": "2026-09-03T11:40:55.150802+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 5,
+    "exchange_id": "1c87defe-94bc-4c85-a4c0-4dee0c174a8e",
+    "user_message_id": 9,
+    "assistant_message_id": 10,
+    "retrieval_text_sha256": "a5393ecc719f38004f0359f8df36a950fdc8d39b451d33bafcb23f12789c279e",
+    "created_at": "2026-09-03T13:10:53.065541+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 6,
+    "exchange_id": "81866afa-7fcf-48aa-813d-1a22023d87d7",
+    "user_message_id": 11,
+    "assistant_message_id": 12,
+    "retrieval_text_sha256": "5ae6f02c671c2a7ebe54c9acf07cc0499d2c8dfddb43b2d7d50175dea3338849",
+    "created_at": "2026-09-03T13:12:29.621890+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 7,
+    "exchange_id": "1150ddf6-91f4-435e-8b47-31b64e81955d",
+    "user_message_id": 13,
+    "assistant_message_id": 14,
+    "retrieval_text_sha256": "7e9adf3e4be6dc7b58e328fb0fb59e417eb8f2989f3555296a8b458c7035f2c3",
+    "created_at": "2026-09-03T13:13:53.491655+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 8,
+    "exchange_id": "abe036c0-a9b8-47d4-87d6-44629a68c7ac",
+    "user_message_id": 15,
+    "assistant_message_id": 16,
+    "retrieval_text_sha256": "02ecf2c1703b6a3956f796086fd598e0cc44ff38a851b4197882c7653c09a80a",
+    "created_at": "2026-09-03T13:15:33.515023+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 9,
+    "exchange_id": "afe1b65b-07e0-469c-93bd-a46212ab30bf",
+    "user_message_id": 17,
+    "assistant_message_id": 18,
+    "retrieval_text_sha256": "4a5ba8809e368512c3466b7905e540a23455b1172a71ad92d4bcc78db10b49fc",
+    "created_at": "2026-09-03T13:25:49.299513+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 10,
+    "exchange_id": "9cdb9502-8818-4cf4-becf-c8efe0792fd2",
+    "user_message_id": 19,
+    "assistant_message_id": 20,
+    "retrieval_text_sha256": "2c12699930e8c4e16630753917e344ecf54a7e7d8f21f320cf6608d0598a1fc1",
+    "created_at": "2026-09-03T13:32:28.685836+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 11,
+    "exchange_id": "6a9a91e0-555e-4c21-9468-e17ba37bad91",
+    "user_message_id": 22,
+    "assistant_message_id": 23,
+    "retrieval_text_sha256": "942ff67c9a0f5165d471670b43708e073dcb26daf56db0adf2cfd0ea825c1fcb",
+    "created_at": "2026-09-03T14:42:26.032594+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 12,
+    "exchange_id": "5c54512f-c345-4003-b210-120cb62b35e5",
+    "user_message_id": 24,
+    "assistant_message_id": 25,
+    "retrieval_text_sha256": "c45475d28cdf2f8b818b551723d9fdd1283735091760f3844fdf9d4bd5a957f8",
+    "created_at": "2026-09-03T14:45:43.343707+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 13,
+    "exchange_id": "4be9515a-6b23-4a88-b3f2-087cc0ddb81c",
+    "user_message_id": 26,
+    "assistant_message_id": 27,
+    "retrieval_text_sha256": "544b60963bb11d5a4d84f51e668ac6a6349c5b99b9ccd7b1d63c479d9d0945fb",
+    "created_at": "2026-09-03T14:53:31.403485+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 14,
+    "exchange_id": "bcd1ea96-c7b6-4d3a-af4c-62f1b9106a92",
+    "user_message_id": 28,
+    "assistant_message_id": 29,
+    "retrieval_text_sha256": "3de7cc1aaee93174f299b0289d8f3bafc5fb5a44ce4d15384173aec0124ab10d",
+    "created_at": "2026-09-03T14:54:40.033051+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 15,
+    "exchange_id": "77963241-8f9f-452d-9d72-34a5ca4f12d6",
+    "user_message_id": 31,
+    "assistant_message_id": 32,
+    "retrieval_text_sha256": "6de37a087de510a1090305c90718475b1b6c7e52d408e15cf952ad3efce74ad5",
+    "created_at": "2026-09-03T15:02:47.998440+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 16,
+    "exchange_id": "c5d10390-4f75-43a3-9ddc-47b7ed5694af",
+    "user_message_id": 33,
+    "assistant_message_id": 34,
+    "retrieval_text_sha256": "84e4c4d707bd1bdba914d15b3e43dd20bcc989b1101535ac422437018677c5e7",
+    "created_at": "2026-09-03T15:27:08.881939+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 17,
+    "exchange_id": "55740504-9058-46df-9728-9f21bd359949",
+    "user_message_id": 35,
+    "assistant_message_id": 36,
+    "retrieval_text_sha256": "f090cbe36914485f2f4eb2e322950b1c536ae59a49c8754148df9692229f2e6c",
+    "created_at": "2026-09-03T15:33:00.759674+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 18,
+    "exchange_id": "9ff98e6d-6f2b-487e-9744-b7ff5409df89",
+    "user_message_id": 37,
+    "assistant_message_id": 38,
+    "retrieval_text_sha256": "a24ecf9decb82d9c9dc7de14d3761c42559f803d508126607cac280f5f9f58ca",
+    "created_at": "2026-09-03T15:37:02.259594+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 19,
+    "exchange_id": "4136326b-0267-41b3-b075-aaec9a6cc195",
+    "user_message_id": 39,
+    "assistant_message_id": 40,
+    "retrieval_text_sha256": "52846282337373d1566290ed639f0be3342484aed8a42f737c528bfa981fc59d",
+    "created_at": "2026-09-03T15:38:44.571814+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 20,
+    "exchange_id": "fbf28f04-a36f-44e4-8a4e-282541ba2347",
+    "user_message_id": 41,
+    "assistant_message_id": 42,
+    "retrieval_text_sha256": "be71b79ca1ea86cd5e3f864162c41ef4c463e94e695f2567ad5c27a2f4bfb590",
+    "created_at": "2026-09-03T15:44:33.560051+00:00",
+    "enhancement_model": "qwen3.7-max"
+  },
+  {
+    "id": 21,
+    "exchange_id": "e6af797c-c811-4779-9571-9917c7d907cd",
+    "user_message_id": 47,
+    "assistant_message_id": 48,
+    "retrieval_text_sha256": "b48d0583ff891b141361fa4eb1903f2002fd0a8e23472919115eb024919c55b9",
+    "created_at": "2026-09-04T03:06:23.929209+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 22,
+    "exchange_id": "2a14937a-6535-4821-b1bb-4b2aeb558b49",
+    "user_message_id": 49,
+    "assistant_message_id": 50,
+    "retrieval_text_sha256": "ed5ae455dcd789cc91452c7c095c314e60f75e14f9160677359142fd83c80551",
+    "created_at": "2026-09-04T03:13:32.013579+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 23,
+    "exchange_id": "7aa179be-021c-41da-bae2-96e5dcbd13db",
+    "user_message_id": 51,
+    "assistant_message_id": 52,
+    "retrieval_text_sha256": "1cb684d98e23ac187950ae7ab5a1e110e4dd8c89ad28c7ebd73c266c273e7577",
+    "created_at": "2026-09-04T03:31:55.385475+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 24,
+    "exchange_id": "199cf3c4-8114-4ef6-ae96-ad529373d035",
+    "user_message_id": 53,
+    "assistant_message_id": 54,
+    "retrieval_text_sha256": "890e16622919eb4b91ec72d14480dafd33b8164b187efe6e1b6e8ce850868bf1",
+    "created_at": "2026-09-04T03:35:32.788152+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 25,
+    "exchange_id": "4dca2daf-6450-414c-bd9b-6d8cd323ae76",
+    "user_message_id": 55,
+    "assistant_message_id": 56,
+    "retrieval_text_sha256": "8b6d7e3207fa11508845a073e97d2c82652dca818ab42a5eec4c8f4cfa319c2f",
+    "created_at": "2026-09-04T03:39:54.883962+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 26,
+    "exchange_id": "e448dd46-d77f-41d1-b4df-3589ea5daa48",
+    "user_message_id": 57,
+    "assistant_message_id": 58,
+    "retrieval_text_sha256": "08e44e66b2d413486f968c9e25e2d959d8622a4b981ffacfb799f43cfa48b6a2",
+    "created_at": "2026-09-04T04:12:28.160534+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 27,
+    "exchange_id": "83733acb-6a27-4e5f-842b-548d6cc812b9",
+    "user_message_id": 59,
+    "assistant_message_id": 60,
+    "retrieval_text_sha256": "24aeb50464517e3d6914990f97fec1a99a580fbeae184b74cf1a4062b6252447",
+    "created_at": "2026-09-04T06:13:02.057188+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 28,
+    "exchange_id": "b262cfb6-63c3-4bb6-bc35-0f0f39eb544d",
+    "user_message_id": 61,
+    "assistant_message_id": 62,
+    "retrieval_text_sha256": "ef30616327aa862f01ebfaea18ccf6ca0b679668f6f8fda510e9027dc859d24e",
+    "created_at": "2026-09-04T06:16:59.665637+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 29,
+    "exchange_id": "acaea793-d1a7-41ef-ab87-df965a79ca7b",
+    "user_message_id": 63,
+    "assistant_message_id": 64,
+    "retrieval_text_sha256": "5900966d46eb6165d708905489c2b96fcd62962d3f886945e7f5b81d23682cd9",
+    "created_at": "2026-09-04T07:20:04.284166+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 30,
+    "exchange_id": "1997459b-7498-42ee-89c3-3c621b30eb4e",
+    "user_message_id": 65,
+    "assistant_message_id": 66,
+    "retrieval_text_sha256": "94ee8536ff9b0bbdad261e7e91f49cbd164c11897191f150a1e3fbbe81a3f57b",
+    "created_at": "2026-09-04T08:06:21.651030+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 31,
+    "exchange_id": "4dffad13-6c47-4d2a-ac4f-e72dcd4fa8ff",
+    "user_message_id": 67,
+    "assistant_message_id": 68,
+    "retrieval_text_sha256": "77ef351a7097198e352a13e66000f19c1b6babb4e1860df2c794fe92c48aebc6",
+    "created_at": "2026-09-04T08:19:53.097184+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 32,
+    "exchange_id": "2c14f7ee-e225-45c3-a84b-f9a99a36489a",
+    "user_message_id": 69,
+    "assistant_message_id": 70,
+    "retrieval_text_sha256": "23594ffeea2e1dbb42240ff273b4191e920ad1d86e70bfc601e54a8c36906e80",
+    "created_at": "2026-09-04T08:25:18.530735+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 33,
+    "exchange_id": "8de8a3ec-6ea9-4bf7-bf44-87bc515e6cc7",
+    "user_message_id": 71,
+    "assistant_message_id": 72,
+    "retrieval_text_sha256": "82b4f45555bf1b987192abf1ea31b7ac9a3a6782720636964f0933eedb5bba40",
+    "created_at": "2026-09-04T09:21:51.375386+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 34,
+    "exchange_id": "92c89292-a9fe-47f5-a05c-6e6b67efc3c5",
+    "user_message_id": 73,
+    "assistant_message_id": 74,
+    "retrieval_text_sha256": "cd6acb6abbc40fb3dcf452c42ec57e9e47fb9f194941030b26a3637859677540",
+    "created_at": "2026-09-04T09:56:11.235512+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 35,
+    "exchange_id": "b3ec43b0-6a0f-4698-b809-08f648928c93",
+    "user_message_id": 75,
+    "assistant_message_id": 76,
+    "retrieval_text_sha256": "c966e8fc9fc8779464a7a443a08a3badda73c20007c616e4e7aad354f4c29074",
+    "created_at": "2026-09-04T10:38:25.711605+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 36,
+    "exchange_id": "ba2171bb-dc36-4f0d-86e4-1c8d1dc086e9",
+    "user_message_id": 77,
+    "assistant_message_id": 78,
+    "retrieval_text_sha256": "e94febb879ff6ebd35765967b456eb761bc135f107d8cd8c07a4d26658a92265",
+    "created_at": "2026-09-04T11:00:11.205687+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 37,
+    "exchange_id": "07d98866-c74d-4e1c-9eb3-66c2c3cc07e0",
+    "user_message_id": 79,
+    "assistant_message_id": 80,
+    "retrieval_text_sha256": "85592d828a7540260cf9f47719254e5a06ef88912a3b0ad6c8ddaf2ff3f373d2",
+    "created_at": "2026-09-04T11:46:36.826992+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 38,
+    "exchange_id": "f727c59e-04ab-40cd-8618-58e1c673791c",
+    "user_message_id": 81,
+    "assistant_message_id": 82,
+    "retrieval_text_sha256": "e4975ffe2593c75590c0842fb82fa0d3647c03e42e53604ea80f39148b67e667",
+    "created_at": "2026-09-04T12:00:32.651775+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 39,
+    "exchange_id": "8d4e6345-78a2-4039-b113-14f8e5c9a899",
+    "user_message_id": 83,
+    "assistant_message_id": 84,
+    "retrieval_text_sha256": "7c7a4aa4f26f22c0fe991e40a37432df7b288a9a42549ce8f164b1688ce81433",
+    "created_at": "2026-09-04T12:56:52.830868+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 40,
+    "exchange_id": "edcf311a-cbb9-4514-9dd5-424d318de8d7",
+    "user_message_id": 85,
+    "assistant_message_id": 86,
+    "retrieval_text_sha256": "c39a6a70ab268132514bea2a30f418248e727699373dd6dc49cd7296ad27b6c8",
+    "created_at": "2026-09-04T13:01:53.905719+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  },
+  {
+    "id": 41,
+    "exchange_id": "824bbc8b-1d50-4945-a6b1-fbdecddc347b",
+    "user_message_id": 87,
+    "assistant_message_id": 88,
+    "retrieval_text_sha256": "7275411ac3fc5545b57ee054bdd5416e01685386f345d94f9bf717c0024d7961",
+    "created_at": "2026-09-04T13:10:07.837843+00:00",
+    "enhancement_model": "qwen3.7-plus-2026-05-26"
+  }
+]

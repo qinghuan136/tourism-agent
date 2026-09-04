@@ -3,6 +3,28 @@
 from importlib import import_module
 
 
+def test_rag_defaults_match_selected_evaluation_parameters(monkeypatch) -> None:
+    """不提供环境覆盖时，配置入口和直接构造 Service 使用同一组实测参数。"""
+    from tourism_agent.providers.model import ModelSettings
+    from tourism_agent.services.conversation_retrieval import (
+        DEFAULT_CANDIDATE_LIMIT,
+        DEFAULT_DEDUP_SIMILARITY_THRESHOLD,
+        DEFAULT_RERANK_SCORE_THRESHOLD,
+    )
+
+    for name in (
+        "RAG_RERANK_SCORE_THRESHOLD",
+        "RAG_DEDUP_SIMILARITY_THRESHOLD",
+        "RAG_CANDIDATE_LIMIT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    settings = ModelSettings(_env_file=None)
+
+    assert settings.rerank_score_threshold == DEFAULT_RERANK_SCORE_THRESHOLD == 0.81
+    assert settings.dedup_similarity_threshold == DEFAULT_DEDUP_SIMILARITY_THRESHOLD == 0.98
+    assert settings.rerank_candidate_limit == DEFAULT_CANDIDATE_LIMIT == 20
+
+
 def test_model_settings_load_environment_variables(monkeypatch) -> None:
     """模型名称、密钥、Base URL 和测试开关都应由环境变量控制。"""
     monkeypatch.setenv("TOURISM_AGENT_MODEL", "test-model")

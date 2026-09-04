@@ -87,6 +87,11 @@ POSTGRES_PASSWORD=your_postgres_password
 TOURISM_AGENT_MODEL=your_chat_model
 OPENAI_API_KEY=your_api_key
 OPENAI_BASE_URL=your_openai_compatible_base_url
+# 使用非 DashScope 模型服务时，需填写 qwen3.7-text-rerank 的实际地址
+TOURISM_AGENT_RERANK_URL=
+RAG_RERANK_SCORE_THRESHOLD=0.81
+RAG_DEDUP_SIMILARITY_THRESHOLD=0.98
+RAG_CANDIDATE_LIMIT=20
 
 QWEATHER_API_HOST=your-api-host.qweatherapi.com
 QWEATHER_API_KEY=your_qweather_api_key
@@ -113,6 +118,8 @@ trip_id = 00000000-0000-4000-8000-000000000002
 ```powershell
 .\.venv\Scripts\python.exe -m tourism_agent.server
 ```
+
+服务启动时会通过 `npx` 拉起 Tavily MCP Server，因此首次启动需要可访问 npm registry。
 
 访问 `http://127.0.0.1:8000/docs` 查看自动生成的 OpenAPI 文档。
 

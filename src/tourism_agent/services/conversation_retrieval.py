@@ -19,7 +19,7 @@ from tourism_agent.services.semantic_enhancement import SemanticEnhancementServi
 
 DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_CANDIDATE_LIMIT = 20
-DEFAULT_RERANK_SCORE_THRESHOLD = 0.0
+DEFAULT_RERANK_SCORE_THRESHOLD = 0.81
 DEFAULT_DEDUP_SIMILARITY_THRESHOLD = 0.98
 
 logger = logging.getLogger(__name__)
